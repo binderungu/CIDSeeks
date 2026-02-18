@@ -1,0 +1,34 @@
+base_config: config.yaml
+output_dir: results/paper_core
+bootstrap_samples: 2000
+confidence: 0.95
+runs_per_variant: 10
+seed_start: 8500
+reproducibility_gate:
+  enforce: true
+  min_runs_per_variant: 10
+  require_explicit_seed: true
+stats_gate:
+  enforce: true
+  min_seeds: 10
+  required_metrics: [AUROC_final]
+  max_ci_width: {}
+
+scenarios:
+  - scenario_id: pmfa_ci_gate
+    attack_type: PMFA
+    notes: "Small non-smoke profile for CI fail-fast gate validation."
+    parameters:
+      n_nodes: [30]
+      iterations: [40]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.6]
+      trust_fall_threshold: [0.5]
+      trust_rise_threshold: [0.55]
+      trust_model: [three_level_challenge]
+      pmfa_detect_prob: [1.0]
+      pmfa_poison_rate: [1.0]
+      pmfa_strategy: [honest_on_challenge_malicious_on_request]

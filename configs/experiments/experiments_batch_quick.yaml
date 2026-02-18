@@ -1,0 +1,53 @@
+base_config: config.yaml
+output_dir: results/paper_core
+runs_per_variant: 1
+seed_start: 5000
+reproducibility_gate:
+  enforce: false
+stats_gate:
+  enforce: false
+scenarios:
+  - scenario_id: collusion_quick
+    attack_type: Collusion
+    parameters:
+      n_nodes: [50]
+      iterations: [30]
+      fraction_colluders: [0.25]
+      fraction_sybils: [0.0]
+      challenge_rate: [med]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.55]
+      trust_fall_threshold: [0.45]
+      trust_rise_threshold: [0.5]
+      trust_model: [three_level_challenge]
+  - scenario_id: pmfa_quick
+    attack_type: PMFA
+    parameters:
+      n_nodes: [50]
+      iterations: [30]
+      fraction_colluders: [0.3]
+      fraction_sybils: [0.05]
+      challenge_rate: [med]
+      challenge_rate_final: [high]
+      challenge_interval_final: [0]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.55]
+      trust_fall_threshold: [0.45]
+      trust_rise_threshold: [0.5]
+      pmfa_detect_prob: [1.0]
+      pmfa_poison_rate: [1.0]
+      pmfa_strategy: [honest_on_challenge_malicious_on_request]
+      trust_model: [three_level_challenge]
+  - scenario_id: sybil_quick
+    attack_type: Sybil
+    parameters:
+      n_nodes: [50]
+      iterations: [30]
+      fraction_colluders: [0.25]
+      fraction_sybils: [0.1]
+      challenge_rate: [med]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.55]
+      trust_fall_threshold: [0.45]
+      trust_rise_threshold: [0.5]
+      trust_model: [three_level_challenge]

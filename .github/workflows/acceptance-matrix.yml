@@ -1,0 +1,79 @@
+name: acceptance-matrix
+
+on:
+  pull_request:
+    paths:
+      - "scripts/qa/acceptance_attack_gap.py"
+      - "src/**"
+      - "config.yaml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+      - ".github/workflows/acceptance-matrix.yml"
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Acceptance profile"
+        required: true
+        default: pr_quick
+        type: choice
+        options:
+          - pr_quick
+          - nightly
+
+jobs:
+  acceptance-pr-quick:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'pr_quick')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run acceptance matrix (PR quick)
+        run: make acceptance-pr
+
+      - name: Upload acceptance report (PR quick)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-pr-quick-report
+          path: results/acceptance/attack_gap_report_pr.json
+          if-no-files-found: warn
+
+  acceptance-nightly:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run acceptance matrix (nightly)
+        run: make acceptance-nightly
+
+      - name: Upload acceptance report (nightly)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-nightly-report
+          path: results/acceptance/attack_gap_report_nightly.json
+          if-no-files-found: warn

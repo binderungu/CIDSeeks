@@ -1,0 +1,168 @@
+# Default Simulation Settings
+
+simulation:
+  total_nodes: 20
+  malicious_ratio: 0.2 # 20% of nodes will be malicious
+  iterations: 5       # Number of SimPy time steps (set low for quick batch run; adjust for full study)
+  seed: 42
+  suite: smoke
+  # runs: 1 # Number of independent runs (for statistical analysis) - Implement later
+
+network:
+  # Type: 'random', 'scale_free', 'small_world', 'mesh', 'hybrid'
+  type: 'random'
+  # For 'random' graph (Erdos-Renyi)
+  connection_probability: 0.3 
+  # For 'scale_free' (Barabasi-Albert)
+  # neighbors_to_attach: 3 
+  # For 'small_world' (Watts-Strogatz)
+  # neighbors_per_node: 4
+  # rewiring_probability: 0.1
+  # For 'hybrid' (backbone + meshed core overlay)
+  # hybrid_backbone: 'small_world'   # random|small_world|scale_free
+  # hybrid_core_ratio: 0.2
+  # hybrid_bridge_probability: 0.3
+
+trust_model:
+  # Active method (only CIDSeeks 3-Level Challenge is supported in the simulator)
+  method: "3-level-challenge"
+  # General parameters
+  trust_threshold: 0.5
+  trust_fall_threshold: 0.5
+  trust_rise_threshold: 0.6
+  initial_trust: 0.5 # Default starting trust value
+  behavior_history_window: 20
+  # 3-Level Challenge Specific Weights
+  learning_rate: 0.3 # Lambda (Basic Challenge)
+  # Dirichlet reputation parameters for advanced tier R_j(t)
+  dirichlet_prior_strength: 10.0
+  dirichlet_forgetting_factor: 0.9
+  dirichlet_levels: [0.0, 0.5, 1.0]
+  dirichlet_weights: [0.0, 0.5, 1.0]
+  dirichlet_neighbor_blend: 1.0
+  weights_advanced: # Alpha, Beta, Gamma, Delta (Advanced Challenge)
+    alpha: 0.4
+    beta: 0.3
+    gamma: 0.2
+    delta: 0.1
+  weights_final: # Theta, Epsilon, Zeta (Final Challenge)
+    theta: 0.4
+    epsilon: 0.3
+    zeta: 0.3
+  weights_biometric: # Mu, Nu, Xi (Biometric Score)
+    mu: 0.3
+    nu: 0.4
+    xi: 0.3
+  weights_total_trust: # W1, W2, W3 (Total Trust Combination)
+    w1: 0.3
+    w2: 0.3
+    w3: 0.4
+  # Tier-aware challenge schedule (distinct update cadence per tier)
+  challenge_rate_tiers:
+    basic: high
+    advanced: med
+    final: low
+  challenge_min_interval_tiers:
+    basic: 0
+    advanced: 1
+    final: 2
+  # Dense-subgraph collusion penalty (advanced tier penalty augmentation)
+  collusion_penalty:
+    enabled: true
+    min_group_size: 3
+    history_window: 20
+    activation_count: 2
+    activation_ratio: 0.2
+    trust_edge_threshold: 0.5
+    density_threshold: 0.5
+    max_penalty: 0.2
+    flag_boost: 0.1
+
+attack:
+  # Type: 'PMFA', 'Collusion', 'Sybil', 'Betrayal', 'None'
+  type: "PMFA"
+  # Parameters specific to certain attacks
+  betrayal_iteration: 25 # Iteration when betrayal starts (legacy key)
+  betrayal_start_round: 25
+  betrayal_mode: two_phase
+  on_off_period: 10
+  on_off_duty_cycle: 0.5
+  # Response model
+  rating_min: 0.0
+  rating_max: 1.0
+  honest_rating_mean: 0.8
+  honest_rating_std: 0.05
+  malicious_high: 0.9
+  malicious_low: 0.1
+  # Sybil/Collusion structure
+  sybil_cluster_size: 3
+  collusion_group_size: 5
+  # PMFA knobs
+  pmfa_detect_prob: 0.6
+  pmfa_collusion_enabled: true
+  pmfa_match_window_rounds: 2
+  pmfa_min_matches: 2
+  pmfa_strategy: honest_on_challenge_malicious_on_request
+  pmfa_poison_rate: 0.5
+  pmfa_fallback_mode: assume_challenge
+  pmfa_request_prior: 0.65
+  pmfa_dmpo_resistance: 0.50
+  # Sybil identity inflation (effective when auth mode is disabled by default)
+  sybil_virtual_identities: 1
+  sybil_identity_rotation: round_robin
+  sybil_allow_identity_with_auth: false
+
+auth:
+  # Mode: required|disabled (for NoAuth ablation)
+  mode: required
+  # Simulated CA identity for protocol-level PKI abstraction
+  ca_name: CIDSeeks-SimCA
+  # 0 means no expiry during run; >0 means certificate TTL in rounds
+  certificate_ttl_rounds: 0
+  # Injected channel/auth uncertainty (sensitivity knobs)
+  transport_failure_rate: 0.0
+  verification_false_accept_rate: 0.0
+  verification_false_reject_rate: 0.0
+  # Simulated revocation model
+  revocation_enabled: true
+  revocation_delay_rounds: 2
+  revocation_epoch_rounds: 5
+  revocation_rate_malicious: 0.8
+  revocation_rate_honest: 0.0
+  # Optional manual serial revocation list
+  revoked_serials: []
+
+# Parameters for newly added features
+features:
+  # Probability a normal node generates a detection event per iteration
+  detection_event_probability: 0.05 
+  # Fanout parameter for gossip protocol
+  gossip_fanout: sqrt
+  # Max hops for gossip messages
+  gossip_max_hops: 5 
+  # Delay for randomized alarm sending (in SimPy time units)
+  min_alarm_send_delay: 0.1
+  max_alarm_send_delay: 0.5
+  variants_per_alarm: 3
+  # Privacy parameters (DMPO)
+  privacy_prefix_bits: 24
+  privacy_k_anonymity: 16
+  dmpo_pmfa_guard: true
+  # privacy_salt: "cidseeks-default"  # Optional; auto-derived from seed if omitted
+
+output:
+  # Directory for saving results (plots, potentially logs, db)
+  directory: "results"
+  # Enable/disable plotting
+  plot_enabled: true
+  # Database file path (relative to output directory or absolute)
+  database_file: "simulation_data.db"
+
+logging:
+  level: "WARNING" # Reduced verbosity for batch run; raise to INFO for detailed tracing
+  file: "logs/simulation.log" # Set to null or omit to log only to console 
+
+ui:
+  graph:
+    open_in_browser_on_render: true
+    auto_refresh_on_render: true

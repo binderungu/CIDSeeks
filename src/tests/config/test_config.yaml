@@ -1,0 +1,22 @@
+Network:
+  num_nodes: 10
+  malicious_ratio: 0.3
+  topology: random
+  connectivity: 0.4
+  min_edges: 2
+
+Attacks:
+  attack_types:
+    - sybil
+  attack_frequency: 0.2
+  coordination_enabled: false
+
+Defense:
+  trust_threshold: 0.4
+  challenge_interval: 20
+  detection_sensitivity: high
+
+Simulation:
+  duration: 100
+  random_seed: 42
+  log_level: DEBUG 

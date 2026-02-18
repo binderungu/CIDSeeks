@@ -1,0 +1,49 @@
+# Legacy compatibility list.
+# Canonical dependency source for this repo is `pyproject.toml` + `uv.lock`.
+
+# Core Simulation & Utilities
+simpy>=4.0.0
+PyYAML>=6.0
+numpy>=1.20.0
+pandas>=1.3.0
+scikit-learn>=1.0.0
+scipy>=1.7.0
+
+# Performance monitoring
+psutil>=5.8.0
+
+# UI and GUI
+customtkinter>=5.0.0
+Pillow>=8.0.0
+pywebview>=4.0      # Full JavaScript support for interactive graphs (preferred)
+tkinterweb>=3.6.0   # Fallback HTML widget (no JavaScript support)
+# tkhtmlview>=1.2.1   # Alternative fallback (no JavaScript support)
+
+# Cryptography for authentication
+cryptography>=3.4.0
+
+# Network analysis
+networkx>=2.8.0
+pyvis>=0.3.2  # Interactive network visualization for graph export
+
+# Visualization
+matplotlib>=3.4.0
+seaborn>=0.11.0
+plotly>=5.0.0
+
+# Data processing and analysis
+openpyxl>=3.0.0
+xlsxwriter>=3.0.0
+
+# Testing
+pytest>=6.2.0
+pytest-mock>=3.6.0
+pytest-cov>=2.0
+
+# Optional: Jupyter for research notebooks
+# jupyter>=1.0.0
+# ipywidgets>=7.6.0
+
+# Added from the code block
+tkhtmlview
+python-dotenv

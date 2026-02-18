@@ -1,0 +1,40 @@
+# runtime artifacts
+logs/*
+!logs/README.md
+# ignore all simulation outputs by default (raw and aggregate)
+results/**
+!results/README.md
+runs/
+report_plots/
+.coverage
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+
+# caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# editor
+.cursor/
+
+# build
+build/
+dist/
+*.egg-info/
+htmlcov/
+
+
+.DS_Store
+src/data/simulation.db
+
+# internal/private authoring assets (keep local, do not publish)
+AGENTS.md
+docs/06_CODEX_RULES.md
+docs/07_THREAD_STARTERS.md
+references/**
+!references/README.md

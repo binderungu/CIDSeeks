@@ -1,0 +1,10 @@
+{
+  "generated_at_utc": "2026-02-18T22:51:00.098366+00:00",
+  "source_repo": "/Users/aditcahyo/Developer/GitHub/research/vibe-cids",
+  "source_branch": "main",
+  "source_commit": "40e3691cf8b6434ae9ad4698c469cd5c837e0ba0",
+  "destination": "/private/tmp/vibe-cids-public",
+  "included_files": 138,
+  "excluded_sensitive_files": [],
+  "include_untracked": true
+}

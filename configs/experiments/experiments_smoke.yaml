@@ -1,0 +1,33 @@
+base_config: config.yaml
+output_dir: results/smoke
+bootstrap_samples: 1000
+confidence: 0.95
+runs_per_variant: 1
+seed_start: 42
+
+scenarios:
+  - scenario_id: smoke_benign
+    attack_type: None
+    notes: quick benign smoke validation for evaluator pipeline
+    parameters:
+      n_nodes: [30]
+      iterations: [200]
+      malicious_ratio: [0.0]
+      fraction_sybils: [0.0]
+      challenge_rate: [low]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.6]
+
+  - scenario_id: smoke_collusion
+    attack_type: Collusion
+    notes: quick malicious smoke validation for evaluator pipeline
+    parameters:
+      n_nodes: [30]
+      iterations: [200]
+      fraction_colluders: [0.1]
+      fraction_sybils: [0.0]
+      challenge_rate: [low]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.6]

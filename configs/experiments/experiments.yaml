@@ -1,0 +1,67 @@
+base_config: config.yaml
+output_dir: results/paper_core
+bootstrap_samples: 10000
+confidence: 0.95
+alpha_thresholds:
+  fqr_max: 0.05
+  asr_max: 0.2
+runs_per_variant: 10
+seed_start: 1000
+stats_gate:
+  enforce: true
+  min_seeds: 10
+  required_metrics: [AUROC_final, TTD_median, FPR_h]
+  max_ci_width:
+    AUROC_final: 0.20
+
+scenarios:
+  - scenario_id: collusion_random
+    attack_type: Collusion
+    notes: Advanced collusion sweep across network sizes and insider densities
+    parameters:
+      n_nodes: [50, 200, 500, 1000]
+      iterations: [200, 500]
+      fraction_colluders: [0.1, 0.3, 0.5]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]
+
+  - scenario_id: pmfa_with_honey
+    attack_type: PMFA
+    notes: PMFA fingerprinting intensity evaluation for proposed method
+    parameters:
+      n_nodes: [50, 200, 500, 1000]
+      iterations: [300, 600]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.05, 0.15]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+
+  - scenario_id: sybil_infiltration
+    attack_type: Sybil
+    notes: Sybil infiltration stress-test across node scales
+    parameters:
+      n_nodes: [50, 200, 500, 1000]
+      iterations: [200, 500]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05, 0.1, 0.2]
+      challenge_rate: [0.05, 0.15]
+      trust_model: [three_level_challenge]
+      trust_threshold: [0.7]
+      forgetting_factor: [0.9]
+
+  - scenario_id: betrayal_switch
+    attack_type: Betrayal
+    notes: Betrayal timing analysis for insider flip attacks
+    parameters:
+      n_nodes: [50, 200, 500, 1000]
+      iterations: [300, 600]
+      fraction_colluders: [0.2]
+      betrayal_iteration: [20, 40]
+      challenge_rate: [0.10]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]

@@ -1,0 +1,60 @@
+base_config: config.yaml
+output_dir: results/paper_core
+runs_per_variant: 5
+seed_start: 7000
+reproducibility_gate:
+  enforce: false
+stats_gate:
+  enforce: false
+
+scenarios:
+  - scenario_id: collusion_balanced
+    attack_type: Collusion
+    notes: "Balanced paper profile (moderate sweep) for collusion."
+    parameters:
+      n_nodes: [50, 100, 200]
+      iterations: [120, 240]
+      fraction_colluders: [0.1, 0.3]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]
+
+  - scenario_id: pmfa_balanced
+    attack_type: PMFA
+    notes: "Balanced paper profile (moderate sweep) for PMFA."
+    parameters:
+      n_nodes: [50, 100, 200]
+      iterations: [120, 240]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.05, 0.15]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+
+  - scenario_id: sybil_balanced
+    attack_type: Sybil
+    notes: "Balanced paper profile (moderate sweep) for Sybil."
+    parameters:
+      n_nodes: [50, 100, 200]
+      iterations: [120, 240]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05, 0.1]
+      challenge_rate: [0.05, 0.15]
+      trust_model: [three_level_challenge]
+      trust_threshold: [0.7]
+      forgetting_factor: [0.9]
+
+  - scenario_id: betrayal_balanced
+    attack_type: Betrayal
+    notes: "Balanced paper profile (moderate sweep) for betrayal."
+    parameters:
+      n_nodes: [50, 100, 200]
+      iterations: [120, 240]
+      fraction_colluders: [0.2]
+      betrayal_iteration: [20, 40]
+      challenge_rate: [0.10]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]

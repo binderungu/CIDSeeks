@@ -1,0 +1,25 @@
+base_config: config.yaml
+output_dir: results/scalability_stress
+runs_per_variant: 10
+seed_start: 9000
+stats_gate:
+  enforce: true
+  min_seeds: 10
+  required_metrics: [cpu_time_ms, msgs_per_round_mean, AUROC_final]
+
+scenarios:
+  - scenario_id: scalability_stress
+    attack_type: PMFA
+    notes: "Scalability envelope stress with larger N and short horizon."
+    parameters:
+      n_nodes: [1000, 2000, 5000, 10000]
+      iterations: [60]
+      malicious_ratio: [0.1]
+      fraction_colluders: [0.1]
+      fraction_sybils: [0.02]
+      challenge_rate: [med]
+      trust_model: [three_level_challenge]
+      trust_threshold: [0.6]
+      forgetting_factor: [0.9]
+      network_type: [random, small_world, scale_free, hybrid]
+      gossip_fanout: [sqrt, log]

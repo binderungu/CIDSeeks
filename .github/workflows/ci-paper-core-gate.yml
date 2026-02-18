@@ -1,0 +1,83 @@
+name: ci-paper-core-gate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci-paper-core-gate.yml"
+      - "simulate.py"
+      - "runner.py"
+      - "scripts/**"
+      - "src/**"
+      - "config.yaml"
+      - "configs/experiments/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+  workflow_dispatch:
+
+jobs:
+  paper-core-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Legacy import guard
+        run: uv run --locked -- python scripts/qa/check_no_legacy_imports.py
+
+      - name: Shell safety guard
+        run: uv run --locked -- python scripts/qa/check_no_shell_true.py
+
+      - name: Tar extraction safety guard
+        run: uv run --locked -- python scripts/qa/check_safe_tar_extract.py
+
+      - name: Deterministic RNG guard
+        run: uv run --locked -- python scripts/qa/check_deterministic_rng.py
+
+      - name: Public repo hygiene guard
+        run: uv run --locked -- python scripts/qa/check_public_repo_hygiene.py
+
+      - name: Lint (critical profile)
+        run: make lint
+
+      - name: Typecheck (staged evaluator profile)
+        run: make typecheck-staged
+
+      - name: Full test suite
+        run: make test
+
+      - name: Run paper_core gate subset (non-smoke)
+        run: uv run --locked -- python simulate.py --suite paper_core --config configs/experiments/experiments_paper_core_ci_gate.yaml
+
+      - name: Manifest integrity guard
+        run: uv run --locked -- python scripts/qa/check_manifest_integrity.py
+
+      - name: Fail-fast stats gate check
+        run: uv run --locked -- python scripts/qa/check_stats_gate.py --path results/paper_core/stats_gate.json
+
+      - name: Upload paper_core gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-core-gate-artifacts
+          path: |
+            results/paper_core/stats_gate.json
+            results/paper_core/seed_manifest.json
+            results/paper_core/aggregate_summary.csv
+            results/paper_core/experiments.csv
+          if-no-files-found: warn

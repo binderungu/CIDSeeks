@@ -1,0 +1,97 @@
+name: ci-core
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci-core.yml"
+      - "simulate.py"
+      - "runner.py"
+      - "scripts/**"
+      - "src/**"
+      - "config.yaml"
+      - "configs/experiments/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+  workflow_dispatch:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Legacy import guard
+        run: uv run --locked -- python scripts/qa/check_no_legacy_imports.py
+
+      - name: Shell safety guard
+        run: uv run --locked -- python scripts/qa/check_no_shell_true.py
+
+      - name: Tar extraction safety guard
+        run: uv run --locked -- python scripts/qa/check_safe_tar_extract.py
+
+      - name: Deterministic RNG guard
+        run: uv run --locked -- python scripts/qa/check_deterministic_rng.py
+
+      - name: Public repo hygiene guard
+        run: uv run --locked -- python scripts/qa/check_public_repo_hygiene.py
+
+      - name: Lint (critical profile)
+        run: make lint
+
+      - name: Typecheck (staged evaluator profile)
+        run: make typecheck-staged
+
+      - name: Full test suite
+        run: make test
+
+      - name: Smoke suite
+        if: matrix.python-version == '3.12'
+        run: uv run --locked -- python simulate.py --suite smoke --config configs/experiments/experiments_smoke.yaml
+
+      - name: Manifest integrity guard
+        if: matrix.python-version == '3.12'
+        run: uv run --locked -- python scripts/qa/check_manifest_integrity.py
+
+      - name: Stats gate check
+        if: matrix.python-version == '3.12'
+        run: uv run --locked -- python scripts/qa/check_stats_gate.py --path results/smoke/stats_gate.json
+
+      - name: Build smoke artifact bundle
+        if: matrix.python-version == '3.12'
+        run: uv run --locked -- python scripts/artifacts/build_artifact_bundle.py --suite smoke --bundle-path results/artifacts/smoke_ci_artifact_bundle.tar.gz --include-manifests
+
+      - name: Verify smoke artifact bundle
+        if: matrix.python-version == '3.12'
+        run: uv run --locked -- python scripts/artifacts/verify_artifact_bundle.py --bundle-path results/artifacts/smoke_ci_artifact_bundle.tar.gz --report results/artifacts/smoke_ci_artifact_bundle_verify.json
+
+      - name: Upload smoke artifacts
+        if: always() && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-ci-artifacts
+          path: |
+            results/smoke
+            results/artifacts/smoke_ci_artifact_bundle.tar.gz
+            results/artifacts/smoke_ci_artifact_bundle_verify.json
+          if-no-files-found: warn

@@ -1,0 +1,60 @@
+base_config: config.yaml
+output_dir: results/paper_core
+runs_per_variant: 2
+seed_start: 6100
+reproducibility_gate:
+  enforce: false
+stats_gate:
+  enforce: false
+
+scenarios:
+  - scenario_id: collusion_dev
+    attack_type: Collusion
+    notes: "Fast dev profile for collusion sanity and trend checks."
+    parameters:
+      n_nodes: [50, 100]
+      iterations: [60, 120]
+      fraction_colluders: [0.2]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]
+
+  - scenario_id: pmfa_dev
+    attack_type: PMFA
+    notes: "Fast dev profile for PMFA verification."
+    parameters:
+      n_nodes: [50, 100]
+      iterations: [60, 120]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]
+
+  - scenario_id: sybil_dev
+    attack_type: Sybil
+    notes: "Fast dev profile for Sybil verification."
+    parameters:
+      n_nodes: [50, 100]
+      iterations: [60, 120]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.1]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]
+
+  - scenario_id: betrayal_dev
+    attack_type: Betrayal
+    notes: "Fast dev profile for betrayal timing checks."
+    parameters:
+      n_nodes: [50, 100]
+      iterations: [60, 120]
+      fraction_colluders: [0.2]
+      betrayal_iteration: [20]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]

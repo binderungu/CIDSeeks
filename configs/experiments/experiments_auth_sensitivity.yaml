@@ -1,0 +1,68 @@
+base_config: config.yaml
+output_dir: results/robustness_sensitivity
+runs_per_variant: 10
+seed_start: 7400
+stats_gate:
+  enforce: true
+  min_seeds: 10
+  required_metrics: [AUROC_final, bypass_rate, fnrq]
+  max_ci_width:
+    AUROC_final: 0.20
+
+scenarios:
+  - scenario_id: pmfa_auth_sensitivity
+    attack_type: PMFA
+    notes: "Template NoAuth vs Auth-sim under PMFA selective-response stress"
+    parameters:
+      n_nodes: [50, 200]
+      iterations: [30, 120]
+      malicious_ratio: [0.3]
+      fraction_colluders: [0.3]
+      fraction_sybils: [0.0]
+      challenge_rate: [med]
+      challenge_rate_final: [high]
+      challenge_interval_final: [0]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.55]
+      trust_fall_threshold: [0.45]
+      trust_rise_threshold: [0.5]
+      trust_model: [three_level_challenge]
+      pmfa_detect_prob: [0.8, 1.0]
+      pmfa_poison_rate: [0.7, 1.0]
+      pmfa_strategy: [honest_on_challenge_malicious_on_request]
+
+      # Core ablation axis
+      auth_mode: [disabled, required]
+
+      # Auth-sim sensitivity knobs (active when auth_mode=required; ignored in disabled mode)
+      auth_revocation_enabled: [true]
+      auth_false_accept_rate: [0.0]
+      auth_false_reject_rate: [0.0]
+      auth_revocation_delay_rounds: [1]
+
+  - scenario_id: pmfa_auth_topology_sweep
+    attack_type: PMFA
+    notes: "Topology + auth-mode robustness sweep."
+    parameters:
+      n_nodes: [200, 1000]
+      iterations: [120]
+      network_type: [random, small_world, scale_free, hybrid]
+      malicious_ratio: [0.2]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.0]
+      challenge_rate: [med]
+      challenge_rate_final: [high]
+      challenge_interval_final: [0]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.6]
+      trust_fall_threshold: [0.5]
+      trust_rise_threshold: [0.55]
+      trust_model: [three_level_challenge]
+      pmfa_detect_prob: [1.0]
+      pmfa_poison_rate: [1.0]
+      pmfa_strategy: [honest_on_challenge_malicious_on_request]
+      auth_mode: [disabled, required]
+      auth_revocation_enabled: [true]
+      auth_false_accept_rate: [0.0]
+      auth_false_reject_rate: [0.0]
+      auth_revocation_delay_rounds: [1]

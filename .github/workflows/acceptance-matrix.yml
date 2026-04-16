@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload acceptance report (PR quick)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: acceptance-pr-quick-report
           path: results/acceptance/attack_gap_report_pr.json
@@ -72,7 +72,7 @@ jobs:
 
       - name: Upload acceptance report (nightly)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: acceptance-nightly-report
           path: results/acceptance/attack_gap_report_nightly.json

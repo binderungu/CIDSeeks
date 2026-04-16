@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Mapping
 
 import numpy as np
 import pandas as pd
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 
 class ResultExporter:
@@ -97,7 +97,7 @@ class ResultExporter:
 
     def _flatten_dict(self, d: Dict, parent_key: str = "", sep: str = ".") -> Dict:
         """Flatten nested dictionary."""
-        items = []
+        items: List[tuple[str, Any]] = []
         for k, v in d.items():
             new_key = f"{parent_key}{sep}{k}" if parent_key else k
             if isinstance(v, dict):
@@ -154,9 +154,9 @@ class ResultExporter:
                     return
                 if isinstance(rows[0], dict):
                     with out.open("w", newline="") as f:
-                        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                        writer.writeheader()
-                        writer.writerows(rows)
+                        dict_writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                        dict_writer.writeheader()
+                        dict_writer.writerows(rows)
                 else:
                     with out.open("w", newline="") as f:
                         writer = csv.writer(f)
@@ -164,9 +164,9 @@ class ResultExporter:
                             writer.writerow([r])
             elif isinstance(rows, dict):
                 with out.open("w", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=list(rows.keys()))
-                    writer.writeheader()
-                    writer.writerow(rows)
+                    dict_writer = csv.DictWriter(f, fieldnames=list(rows.keys()))
+                    dict_writer.writeheader()
+                    dict_writer.writerow(rows)
             else:
                 with out.open("w") as f:
                     f.write(str(rows))

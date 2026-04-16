@@ -8,7 +8,7 @@ import customtkinter as ctk
 import time
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import traceback
 
 from ui.data_analysis_tab import DataAnalysisTab
@@ -584,7 +584,7 @@ class MainWindow(ctk.CTk):
              self.simulation_setup.stop_button.configure(state="disabled")
              self.set_busy_cursor(False)
 
-    def _get_selected_attack_type(self) -> str:
+    def _get_selected_attack_type(self) -> Optional[str]:
         """Get selected attack type."""
         # Dictionary attack types dari checkboxes
         attack_types = {

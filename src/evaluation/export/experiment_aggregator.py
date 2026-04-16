@@ -38,8 +38,27 @@ METRIC_COLUMNS: List[str] = [
     'stability_kendall_tau',
     'pmfa_success_rate_no_ver',
     'pmfa_success_rate_with_ver',
+    'pmfa_success_rate_baseline_no_privacy',
+    'pmfa_success_rate_legacy_dmpo',
+    'pmfa_success_rate_dmpo_x',
+    'pmfa_auc_baseline_no_privacy',
+    'pmfa_auc_legacy_dmpo',
+    'pmfa_auc_dmpo_x',
+    'pmfa_open_adv_baseline_no_privacy',
+    'pmfa_open_adv_legacy_dmpo',
+    'pmfa_open_adv_dmpo_x',
+    'pmfa_drift_auc_baseline_no_privacy',
+    'pmfa_drift_auc_legacy_dmpo',
+    'pmfa_drift_auc_dmpo_x',
     'trust_gap_final',
     'trust_gap_auc',
+    'fibd_mean',
+    'split_fail_mean',
+    'coalcorr_mean',
+    'apmfa_penalty_mean',
+    'apmfa_penalty_mean_malicious',
+    'final_split_fail_penalty_mean',
+    'attribution_signal_count_mean',
     'collusion_amplification_final',
     'collusion_amplification_mean',
     'collusion_amplification_auc',
@@ -108,16 +127,36 @@ def cliffs_delta(x: Sequence[float], y: Sequence[float]) -> float:
 def benjamini_hochberg(p_values: Dict[Tuple[str, str, str], float]) -> Dict[Tuple[str, str, str], float]:
     if not p_values:
         return {}
-    items = list(p_values.items())
-    items.sort(key=lambda kv: kv[1])
-    m = len(items)
     adjusted: Dict[Tuple[str, str, str], float] = {}
+    finite_items: List[Tuple[Tuple[str, str, str], float]] = []
+    for key, value in p_values.items():
+        try:
+            p_val = float(value)
+        except (TypeError, ValueError):
+            adjusted[key] = float("nan")
+            continue
+        if not np.isfinite(p_val):
+            adjusted[key] = float("nan")
+            continue
+        finite_items.append((key, min(max(p_val, 0.0), 1.0)))
+
+    if not finite_items:
+        return adjusted
+
+    finite_items.sort(key=lambda kv: kv[1])
+    m = len(finite_items)
+    ranked_adjusted: List[float] = [float("nan")] * m
     prev = 1.0
-    for rank, (key, p_val) in enumerate(items, start=1):
-        bh = p_val * m / rank
-        bh = min(bh, 1.0)
+    # BH requires a reverse cumulative minimum on p_i * m / rank.
+    for idx in range(m - 1, -1, -1):
+        key, p_val = finite_items[idx]
+        rank = idx + 1
+        bh = min(p_val * m / rank, 1.0)
         prev = min(prev, bh)
-        adjusted[key] = prev
+        ranked_adjusted[idx] = prev
+
+    for (key, _), p_adj in zip(finite_items, ranked_adjusted):
+        adjusted[key] = p_adj
     return adjusted
 
 
@@ -214,6 +253,8 @@ class ExperimentAggregator:
         alpha_thresholds: Optional[Dict[str, float]] = None,
         seed: Optional[int] = None,
         gate_config: Optional[Dict[str, Any]] = None,
+        batch_id: Optional[str] = None,
+        aggregation_scope: str = "current_batch_records_only",
     ) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -228,9 +269,12 @@ class ExperimentAggregator:
         self.rng = np.random.default_rng(resolved_seed)
         self.ci_method = "bootstrap"
         self.gate_config = self._resolve_gate_config(gate_config)
+        self.batch_id = str(batch_id or "adhoc_batch")
+        self.aggregation_scope = str(aggregation_scope or "current_batch_records_only")
 
         self.records: List[Dict[str, Any]] = []
         self.run_log_path = self.output_dir / 'run_log.jsonl'
+        self.batch_manifest_path = self.output_dir / 'batch_manifest.json'
 
     def add_run(self, summary_row: Dict[str, Any], run_dir: Union[str, Path]) -> None:
         row = dict(summary_row)
@@ -252,6 +296,7 @@ class ExperimentAggregator:
 
         stats_df = self._build_statistics_table(df)
         stats_df.to_csv(self.output_dir / 'stats.csv', index=False)
+        self._write_batch_manifest(df)
         stats_gate = self._build_stats_gate(aggregate_df)
         (self.output_dir / "stats_gate.json").write_text(
             json.dumps(stats_gate, indent=2),
@@ -265,8 +310,9 @@ class ExperimentAggregator:
         if not readme.exists():
             readme.write_text(
                 "Suite outputs for CIDSeeks Evaluation-2.\n\n"
-                "- `experiments.csv`: per-run summary rows\n"
+                "- `experiments.csv`: per-run summary rows for the current aggregation batch\n"
                 "- `aggregate_summary.csv`: aggregated metrics\n"
+                "- `batch_manifest.json`: provenance for the aggregation batch\n"
                 "- `stats_gate.json`: reproducibility/statistics gate result\n"
                 "- `aggregate_plots/`: suite-level figures\n",
                 encoding="utf-8",
@@ -277,13 +323,13 @@ class ExperimentAggregator:
     # ------------------------------------------------------------------
     def _resolve_gate_config(self, gate_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         suite_name = self.output_dir.name
-        defaults = {
+        defaults: Dict[str, Any] = {
             "min_seeds": 1 if suite_name in {"smoke", "acceptance"} else 10,
             "required_metrics": ["AUROC_final"],
             "max_ci_width": {},
             "enforce": True,
         }
-        merged = dict(defaults)
+        merged: Dict[str, Any] = dict(defaults)
         if isinstance(gate_config, dict):
             merged.update(gate_config)
         max_ci_width = merged.get("max_ci_width")
@@ -292,9 +338,45 @@ class ExperimentAggregator:
         required_metrics = merged.get("required_metrics")
         if not isinstance(required_metrics, list) or not required_metrics:
             merged["required_metrics"] = ["AUROC_final"]
-        merged["min_seeds"] = int(merged.get("min_seeds", defaults["min_seeds"]))
+        min_seeds_raw = merged.get("min_seeds", defaults["min_seeds"])
+        min_seeds_value = int(defaults["min_seeds"])
+        if isinstance(min_seeds_raw, bool):
+            min_seeds_value = int(min_seeds_raw)
+        elif isinstance(min_seeds_raw, (int, float, str)):
+            try:
+                min_seeds_value = int(min_seeds_raw)
+            except (TypeError, ValueError):
+                min_seeds_value = int(defaults["min_seeds"])
+        merged["min_seeds"] = min_seeds_value
         merged["enforce"] = bool(merged.get("enforce", True))
         return merged
+
+    def _write_batch_manifest(self, df: pd.DataFrame) -> None:
+        run_ids = []
+        if "run_id" in df.columns:
+            run_ids = [str(value) for value in df["run_id"].dropna().tolist()]
+        experiment_ids = []
+        if "run_id" in df.columns:
+            experiment_ids = sorted({str(value).split("__", 1)[0] for value in df["run_id"].dropna().tolist()})
+        seeds = []
+        if "seed" in df.columns:
+            seeds = sorted({int(value) for value in pd.to_numeric(df["seed"], errors="coerce").dropna().astype(int).tolist()})
+
+        payload = {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "suite": self.output_dir.name,
+            "output_dir": str(self.output_dir),
+            "batch_id": self.batch_id,
+            "aggregation_scope": self.aggregation_scope,
+            "n_rows": int(len(df)),
+            "n_unique_runs": int(len(set(run_ids))),
+            "n_unique_experiments": int(len(experiment_ids)),
+            "n_unique_seeds": int(len(seeds)),
+            "run_ids": run_ids,
+            "experiment_ids": experiment_ids,
+            "seeds": seeds,
+        }
+        self.batch_manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _build_aggregate_table(self, df: pd.DataFrame) -> pd.DataFrame:
         rows: List[AggregatedMetric] = []
@@ -302,6 +384,24 @@ class ExperimentAggregator:
         for (scenario, variant, method), group in df.groupby(['scenario', 'variant', 'algo']):
             n_seeds = int(group['seed'].nunique()) if 'seed' in group.columns else int(len(group))
             for metric in METRIC_COLUMNS:
+                if metric not in group.columns:
+                    rows.append(
+                        AggregatedMetric(
+                            scenario,
+                            variant,
+                            metric,
+                            method,
+                            float('nan'),
+                            float('nan'),
+                            float('nan'),
+                            float('nan'),
+                            float('nan'),
+                            self.ci_method,
+                            n_seeds,
+                            n_seeds < min_seed_gate,
+                        )
+                    )
+                    continue
                 values = pd.to_numeric(group[metric], errors='coerce').dropna()
                 if values.empty:
                     rows.append(
@@ -461,6 +561,10 @@ class ExperimentAggregator:
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "suite": self.output_dir.name,
             "output_dir": str(self.output_dir),
+            "batch_id": self.batch_id,
+            "aggregation_scope": self.aggregation_scope,
+            "batch_manifest": str(self.batch_manifest_path),
+            "n_records": int(len(self.records)),
             "config": gate_cfg,
             "checked_rows": int(len(checked_rows)),
             "failures": failures,
@@ -489,6 +593,8 @@ class ExperimentAggregator:
                 for metric in METRIC_COLUMNS:
                     col_a = f'{metric}_{reference_method}'
                     col_b = f'{metric}_{method}'
+                    if col_a not in merged.columns or col_b not in merged.columns:
+                        continue
                     if col_a not in merged or col_b not in merged:
                         continue
                     required_cols = [col_a, col_b, f'run_dir_{reference_method}', f'run_dir_{method}']

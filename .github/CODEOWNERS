@@ -1,0 +1,13 @@
+# Update the owner handle/team if the repository moves to an organization.
+* @aditcahyo
+
+# Canonical experiment/reproducibility contracts
+/docs/ @aditcahyo
+/simulate.py @aditcahyo
+/runner.py @aditcahyo
+/configs/experiments/ @aditcahyo
+
+# Core simulation and evaluation pipeline
+/src/simulation/ @aditcahyo
+/src/evaluation/ @aditcahyo
+/scripts/qa/ @aditcahyo

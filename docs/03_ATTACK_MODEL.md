@@ -1,4 +1,4 @@
-# 03_ATTACK_MODEL — Insider Attacks (paper-aligned, 4 attacks only)
+# 03_ATTACK_MODEL — Insider Attacks and A-PMFA Threat Model
 
 Dokumen ini mendefinisikan *serangan insider* yang WAJIB didukung oleh simulator VIBE-CIDS/CIDSeeks,
 sesuai scope threat model paper: **Sybil, Collusion, Betrayal (on-off), PMFA**.
@@ -11,6 +11,10 @@ Tujuan:
 Catatan scope paper vs repo:
 - Naskah utama (`references/cids.md`) membahas landscape serangan yang lebih luas.
 - Repo Evaluasi-2 ini sengaja membatasi validasi implementasi pada **4 insider attacks** di atas agar eksperimen end-to-end tetap auditable dan reproducible.
+- Narasi paper terbaru memposisikan PMFA sebagai **A-PMFA**: attacker metadata-level yang mencoba membedakan `REQUEST` vs `CHALLENGE`, lalu merespons selektif sambil menjaga trust tetap tinggi.
+- Defense canonical repo ini bukan “obfuscation only”, tetapi **obfuscation + attribution**:
+  - DMPO-X menurunkan probe distinguishability,
+  - trust engine mengonversi residual leakage menjadi evidence `FIBD`, `SplitFail`, `CoalCorr`.
 - Jika cakupan diperluas (mis. pollution/newcomer), tambahkan dokumen threat model dan suite eksperimen terpisah sebelum klaim paper dinaikkan.
 
 Non-goal (di file ini):
@@ -28,6 +32,7 @@ Simulator harus membedakan minimal dua jenis pesan (secara internal, walau attac
 
 Catatan: PMFA bekerja karena attacker dapat mengklasifikasikan REQUEST vs CHALLENGE dengan fingerprint,
 misalnya lewat kesamaan alarm-set yang tersebar ke beberapa node (bandingkan antar penerima) dan/atau invariants timing/metadata.
+Pada framing terbaru paper, classifier ini tidak harus sempurna; cukup lebih baik dari random secara konsisten agar selective-response menjadi ancaman nyata.
 
 ### Observation record (kontrak minimal antara Simulator dan TrustCalculator)
 Setiap interaksi menghasilkan `Observation` yang dicatat oleh simulator (ini yang dipakai TrustCalculator):
@@ -154,10 +159,10 @@ Expected signature:
 - trust drift: trust awal tinggi lalu turun ketika OFF muncul.
 - metode yang “time-aware” (mis. forgetting factor) harus lebih cepat menangkap perubahan.
 
-### 2.4 PMFA (Passive Message Fingerprint Attack)
-Intuisi inti (literatur):
+### 2.4 A-PMFA (Adaptive Passive Message Fingerprint Attack)
+Intuisi inti (literatur + narasi paper terbaru):
 - Challenge-based trust mengandalkan attacker tidak bisa membedakan CHALLENGE vs REQUEST.
-- PMFA mematahkan asumsi itu: attacker *pasif* mengumpulkan pesan dan, via fingerprint,
+- A-PMFA mematahkan asumsi itu: attacker *pasif* mengumpulkan pesan dan, via fingerprint,
   mengklasifikasikan REQUEST (normal alarm-ranking request) vs CHALLENGE.
   Contoh mekanisme: REQUEST berisi alarm-set yang sama dan dikirim ke banyak node, sehingga
   malicious nodes bisa membandingkan pesan yang mereka terima dan mencari match; jika match,
@@ -186,14 +191,16 @@ Response strategy (wajib salah satu):
   - else: honest-like
 
 Why this matters:
-- Under PMFA, trust value attacker bisa “bertahan tinggi” (challenge tidak memukulnya),
+- Under A-PMFA, trust value attacker bisa “bertahan tinggi” (challenge tidak memukulnya),
   tapi agregasi alarm rusak, sehingga baseline cenderung AUC ~ chance.
-- Defense paper kamu mengklaim bisa tetap memisahkan attacker dan mencapai AUC tinggi
-  meski attacker “occasionally honest”.
+- Defense canonical paper path:
+  - DMPO-X berusaha membuat stream `REQUEST` dan `CHALLENGE` makin sukar dibedakan,
+  - trust engine memanfaatkan `FIBD`, `SplitFail`, dan `CoalCorr` untuk mengatribusikan residual leakage ketika attacker tetap berhasil selektif.
+- Klaim yang aman: sistem **meminimalkan probe distinguishability** dan **mengubah residual fingerprintability menjadi trust evidence**, bukan “menghilangkan leakage sepenuhnya”.
 
 Acceptance checks:
 - Dengan PMFA aktif dan baseline sederhana, trust attacker tidak drop cepat.
-- Dengan CIDSeeks defense aktif, trust separation jelas dan AUC meningkat per round.
+- Dengan CIDSeeks defense aktif, trust separation jelas, `P_apmfa` naik pada node selektif, dan AUC meningkat per round.
 
 ---
 
@@ -208,6 +215,7 @@ Acceptance checks:
    - Simulator mencatat Observation
    - TrustCalculator mengupdate trust berdasarkan Observation
 4) Semua randomness harus seeded dari `seed` + node_id (deterministic per eksperimen).
+5) TrustCalculator tidak boleh berisi `if attack_type == PMFA`; operationalization `FIBD`, `SplitFail`, `CoalCorr` harus dibentuk dari `Observation.flags` dan tracker attribution, lalu dipakai sebagai penalty terpisah.
 
 ---
 

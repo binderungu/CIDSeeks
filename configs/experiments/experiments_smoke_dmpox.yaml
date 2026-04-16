@@ -1,0 +1,21 @@
+base_config: config.yaml
+output_dir: results/smoke
+bootstrap_samples: 500
+confidence: 0.95
+runs_per_variant: 1
+seed_start: 4200
+
+scenarios:
+  - scenario_id: smoke_dmpox_pmfa
+    attack_type: PMFA
+    notes: targeted smoke validation for DMPO-X runtime dissemination path
+    parameters:
+      n_nodes: [20]
+      iterations: [40]
+      malicious_ratio: [0.2]
+      fraction_sybils: [0.0]
+      challenge_rate: [low]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.6]
+      privacy_strategy: [dmpo_x]

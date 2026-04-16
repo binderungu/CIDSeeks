@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 
 def test_smoke_suite_config_matches_canonical_contract() -> None:
@@ -27,4 +27,3 @@ def test_smoke_suite_config_matches_canonical_contract() -> None:
     assert collusion_params["n_nodes"] == [30]
     assert collusion_params["iterations"] == [200]
     assert collusion_params["fraction_colluders"] == [0.1]
-

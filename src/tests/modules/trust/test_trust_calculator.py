@@ -51,6 +51,21 @@ def test_advanced_challenge_bad_inputs(calculator, adv_weights):
      # Based on weights 0.4*0.4 + 0.3*0.3 + 0.2*0.2 - 0.1*0.9 = 0.16 + 0.09 + 0.04 - 0.09 = 0.2
     assert abs(score - 0.2) < 1e-6
 
+
+def test_advanced_challenge_uses_explicit_apmfa_penalty(calculator, adv_weights):
+    score = calculator.calculate_advanced_challenge_score(
+        target_node_is_malicious=True,
+        iteration=5,
+        prev_trust=0.5,
+        reputation=0.5,
+        contribution=0.5,
+        penalty=0.2,
+        weights=adv_weights,
+        advanced_terms={"fibd": 0.1, "split_fail": 0.1, "coalcorr": 0.1, "apmfa_penalty": 0.6},
+    )
+    expected = 0.4 * 0.5 + 0.3 * 0.5 + 0.2 * 0.5 - 0.1 * (0.2 + 0.6)
+    assert abs(score - expected) < 1e-6
+
 # --- Test Final Challenge --- 
 @pytest.fixture
 def final_weights():
@@ -75,6 +90,17 @@ def test_final_challenge_bad_inputs(calculator, final_weights):
     )
     # 0.4*0.4 + 0.3*0.0 + 0.3*0.2 = 0.16 + 0.0 + 0.06 = 0.22
     assert abs(score - 0.22) < 1e-6
+
+
+def test_final_challenge_supports_split_fail_penalty(calculator, final_weights):
+    score = calculator.calculate_final_challenge_score(
+        prev_trust=0.6,
+        auth_status=1.0,
+        biometric_score=0.8,
+        weights=final_weights,
+        attribution_penalty=0.15,
+    )
+    assert abs(score - 0.63) < 1e-6
 
 # --- Test Total Trust --- 
 def test_total_trust(calculator):

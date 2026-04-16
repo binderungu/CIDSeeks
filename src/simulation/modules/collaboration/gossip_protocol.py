@@ -1,4 +1,4 @@
-from typing import List, Set, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 import random
 import logging
 
@@ -14,12 +14,16 @@ class GossipProtocol:
         """
         self.fanout = fanout
         self.max_hops = 5  # Maksimum hop untuk setiap pesan
-        self.message_cache = {}  # Untuk mencegah pesan duplikat
+        self.message_cache: Dict[Any, Dict[str, Any]] = {}
         self.logger = logging.getLogger(__name__)
         self.rng = rng or random.Random(0)
 
-    def select_targets(self, nodes: List[str], sender: str, 
-                      exclude: Set[str] = None) -> List[str]:
+    def select_targets(
+        self,
+        nodes: List[str],
+        sender: str,
+        exclude: Optional[Set[str]] = None,
+    ) -> List[str]:
         """
         Pilih node target untuk meneruskan pesan
         
@@ -38,7 +42,7 @@ class GossipProtocol:
         num_targets = min(self.fanout, len(available_nodes))
         return self.rng.sample(available_nodes, num_targets)
 
-    def process_message(self, message: Dict, nodes: Dict[str, object]) -> List[str]:
+    def process_message(self, message: Dict[str, Any], nodes: Dict[str, object]) -> List[str]:
         """
         Proses pesan dan tentukan target penyebaran berikutnya
         

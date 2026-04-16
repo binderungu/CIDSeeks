@@ -19,8 +19,18 @@ class Network:
         self.nodes = nodes
         self.avg_degree = avg_degree
         self.logger = logging.getLogger(__name__)
-        self.adjacency_list = {}  # Dictionary untuk menyimpan neighbors tiap node
+        self.adjacency_list: dict[int, set[int]] = {}
         self.rng = rng or random.Random(0)
+
+    def _to_nx_graph(self) -> nx.Graph:
+        """Build a NetworkX graph view from the internal adjacency list."""
+        graph = nx.Graph()
+        graph.add_nodes_from(range(len(self.nodes)))
+        for source, neighbors in self.adjacency_list.items():
+            for target in neighbors:
+                if source != target:
+                    graph.add_edge(source, target)
+        return graph
         
     def initialize_connections(self, connectivity=0.3):
         """
@@ -158,18 +168,20 @@ class Network:
             Dict[str, Any]: Metrik jaringan (degree distribution, clustering, dll)
         """
         try:
+            graph = self._to_nx_graph()
+            is_connected = graph.number_of_nodes() <= 1 or nx.is_connected(graph)
             metrics = {
                 'avg_degree': self.get_average_degree(),
                 'max_degree': max(self.get_degree(n.id) for n in self.nodes),
                 'min_degree': min(self.get_degree(n.id) for n in self.nodes),
                 'clustering': self.get_clustering_coefficient(),
-                'density': nx.density(self.adjacency_list),
-                'is_connected': all(len(neighbors) > 0 for neighbors in self.adjacency_list.values())
+                'density': nx.density(graph),
+                'is_connected': is_connected,
             }
             
             if metrics['is_connected']:
                 metrics['avg_path_length'] = self.get_average_path_length()
-                metrics['diameter'] = nx.diameter(self.adjacency_list)
+                metrics['diameter'] = nx.diameter(graph)
             else:
                 metrics['avg_path_length'] = float('inf')
                 metrics['diameter'] = float('inf')

@@ -12,7 +12,7 @@ import shutil
 import uuid
 import simpy
 import sys
-import yaml  # Tambahkan import yaml
+import yaml  # type: ignore[import-untyped]
 import traceback  # <-- Tambahkan import traceback
 import psutil
 import pandas as pd
@@ -134,6 +134,17 @@ class SimulationEngine:
         feature_config.setdefault('privacy_salt', f"cidseeks-{self.seed}")
         feature_config.setdefault('privacy_prefix_bits', 24)
         feature_config.setdefault('privacy_k_anonymity', 16)
+        privacy_cfg = feature_config.setdefault('privacy', {})
+        if not isinstance(privacy_cfg, dict):
+            privacy_cfg = {}
+            feature_config['privacy'] = privacy_cfg
+        strategy_name = str(feature_config.get('privacy_strategy') or privacy_cfg.get('strategy') or 'dmpo_legacy').lower()
+        privacy_cfg['strategy'] = strategy_name
+        controller_cfg = privacy_cfg.setdefault('controller', {})
+        if not isinstance(controller_cfg, dict):
+            controller_cfg = {}
+            privacy_cfg['controller'] = controller_cfg
+        controller_cfg['enabled'] = bool(controller_cfg.get('enabled', False)) or strategy_name == 'dmpo_x'
         self.config['features'] = feature_config
         auth_config.setdefault('mode', 'required')
         auth_config.setdefault('seed', self.seed)
@@ -246,7 +257,7 @@ class SimulationEngine:
         # self.metrics = {} # Tidak digunakan secara aktif? Bisa dihapus jika tidak perlu
 
         # --- Tambahkan atribut untuk process SimPy --- 
-        self.simulation_process: Optional[simpy.Process] = None
+        self.simulation_process: Optional[simpy.Process] = None  # type: ignore[assignment,method-assign]
 
         # Preflight permission checks before DB setup
         self._preflight_output_paths(output_config)
@@ -1262,24 +1273,52 @@ class SimulationEngine:
             if not rows:
                 return
 
-            aggregator = ExperimentAggregator(output_dir=suite_root, bootstrap_samples=2000, seed=self.seed)
+            aggregator = ExperimentAggregator(
+                output_dir=suite_root,
+                bootstrap_samples=2000,
+                seed=self.seed,
+                batch_id="suite_refresh",
+                aggregation_scope="suite_snapshot_refresh",
+            )
             try:
                 aggregator.run_log_path.unlink(missing_ok=True)  # reset run log for deterministic outputs
             except AttributeError:
                 self.logger.debug("Run log reset skipped for aggregator")
             aggregator.records = rows
             aggregator.finalize()
-
-            attack_metrics = ['AUROC_final', 'TTD_median', 'bypass_rate', 'msgs_per_round_mean',
-                              'bytes_per_round_mean', 'latency_per_round_mean', 'trust_gap_final',
-                              'stability_kendall_tau']
-            df_all = pd.DataFrame(rows)
-            if not df_all.empty:
-                attack_summary = df_all.groupby('attack')[attack_metrics].describe().reset_index()
-                attack_summary.columns = ['_'.join(col).rstrip('_') for col in attack_summary.columns.to_flat_index()]
-                attack_summary.to_csv(suite_root / 'attack_summary.csv', index=False)
+            self._write_attack_summary(suite_root, rows)
         except Exception as agg_exc:
             self.logger.warning(f"Failed to refresh scenario aggregates: {agg_exc}")
+
+    def _write_attack_summary(self, suite_root: Path, rows: List[Dict[str, Any]]) -> None:
+        attack_metrics = [
+            'AUROC_final',
+            'TTD_median',
+            'bypass_rate',
+            'msgs_per_round_mean',
+            'bytes_per_round_mean',
+            'latency_per_round_mean',
+            'trust_gap_final',
+            'stability_kendall_tau',
+        ]
+        df_all = pd.DataFrame(rows)
+        if df_all.empty or 'attack' not in df_all.columns:
+            return
+
+        available_metrics = [metric for metric in attack_metrics if metric in df_all.columns]
+        if not available_metrics:
+            return
+
+        attack_frame = df_all[['attack', *available_metrics]].dropna(subset=['attack'])
+        if attack_frame.empty:
+            return
+
+        attack_summary = attack_frame.groupby('attack')[available_metrics].describe().reset_index()
+        attack_summary.columns = [
+            '_'.join(map(str, col)).rstrip('_') if isinstance(col, tuple) else str(col)
+            for col in attack_summary.columns.to_flat_index()
+        ]
+        attack_summary.to_csv(suite_root / 'attack_summary.csv', index=False)
 
     def _estimate_overhead_from_events(self, run_dir: Path) -> Optional[Dict[str, Any]]:
         events_path = run_dir / 'events.jsonl'
@@ -1332,7 +1371,7 @@ class SimulationEngine:
     @staticmethod
     def _compute_event_payload_bytes(event: Dict[str, Any], default_latency_ms: float) -> Dict[str, float]:
         details = event.get('details', {}) or {}
-        base_payload = {
+        base_payload: Dict[str, Any] = {
             'source': int(event.get('node_id', -1)),
             'target': int(event.get('related_node_id', -1)),
             'round': int(event.get('iteration', 0)),

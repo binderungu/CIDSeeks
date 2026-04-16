@@ -27,10 +27,12 @@ scenarios:
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
 
   - scenario_id: pmfa_flagship
     attack_type: PMFA
-    notes: "High-confidence profile for PMFA fingerprinting resistance."
+    notes: "High-confidence profile for PMFA fingerprinting resistance with DMPO legacy vs DMPO-X."
     parameters:
       n_nodes: [50, 100, 200, 500]
       iterations: [200, 500]
@@ -40,6 +42,25 @@ scenarios:
       trust_model: [three_level_challenge]
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
+      privacy_strategy: [dmpo_legacy, dmpo_x]
+      attribution_profile: [full]
+      auth_mode: [required]
+
+  - scenario_id: pmfa_attribution_flagship
+    attack_type: PMFA
+    notes: "High-confidence attribution ablation profile on canonical DMPO-X."
+    parameters:
+      n_nodes: [200]
+      iterations: [240]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.10]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      privacy_strategy: [dmpo_x]
+      attribution_profile: [full, no_fibd, no_split_fail, no_coalcorr]
+      auth_mode: [required]
 
   - scenario_id: sybil_flagship
     attack_type: Sybil
@@ -53,6 +74,8 @@ scenarios:
       trust_model: [three_level_challenge]
       trust_threshold: [0.7]
       forgetting_factor: [0.9]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
 
   - scenario_id: betrayal_flagship
     attack_type: Betrayal
@@ -66,6 +89,8 @@ scenarios:
       trust_model: [three_level_challenge]
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
 
   - scenario_id: topology_flagship
     attack_type: PMFA
@@ -78,6 +103,9 @@ scenarios:
       challenge_rate: [0.10]
       trust_model: [three_level_challenge]
       trust_threshold: [0.7]
+      privacy_strategy: [dmpo_x]
+      attribution_profile: [full]
+      auth_mode: [required]
 
   - scenario_id: privacy_trust_sensitivity_flagship
     attack_type: PMFA
@@ -87,7 +115,10 @@ scenarios:
       iterations: [240]
       trust_threshold: [0.6, 0.7, 0.8]
       variants_per_alarm: [1, 3]
+      privacy_strategy: [dmpo_legacy, dmpo_x]
       min_alarm_send_delay: [0.0]
       max_alarm_send_delay: [0.0, 1.0]
       challenge_rate: [0.10]
       trust_model: [three_level_challenge]
+      attribution_profile: [full]
+      auth_mode: [required]

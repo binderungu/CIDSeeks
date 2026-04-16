@@ -19,10 +19,12 @@ scenarios:
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
 
   - scenario_id: pmfa_balanced
     attack_type: PMFA
-    notes: "Balanced paper profile (moderate sweep) for PMFA."
+    notes: "Balanced paper profile (moderate sweep) for PMFA with DMPO legacy vs DMPO-X."
     parameters:
       n_nodes: [50, 100, 200]
       iterations: [120, 240]
@@ -32,6 +34,25 @@ scenarios:
       trust_model: [three_level_challenge]
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
+      privacy_strategy: [dmpo_legacy, dmpo_x]
+      attribution_profile: [full]
+      auth_mode: [required]
+
+  - scenario_id: pmfa_attribution_balanced
+    attack_type: PMFA
+    notes: "Balanced attribution ablation profile on canonical DMPO-X."
+    parameters:
+      n_nodes: [100]
+      iterations: [120]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.10]
+      trust_model: [three_level_challenge]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      privacy_strategy: [dmpo_x]
+      attribution_profile: [full, no_fibd, no_split_fail, no_coalcorr]
+      auth_mode: [required]
 
   - scenario_id: sybil_balanced
     attack_type: Sybil
@@ -45,6 +66,8 @@ scenarios:
       trust_model: [three_level_challenge]
       trust_threshold: [0.7]
       forgetting_factor: [0.9]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
 
   - scenario_id: betrayal_balanced
     attack_type: Betrayal
@@ -58,3 +81,5 @@ scenarios:
       trust_model: [three_level_challenge]
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]

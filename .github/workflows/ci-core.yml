@@ -53,8 +53,14 @@ jobs:
       - name: Deterministic RNG guard
         run: uv run --locked -- python scripts/qa/check_deterministic_rng.py
 
+      - name: SimPy blocking sleep guard
+        run: uv run --locked -- python scripts/qa/check_no_time_sleep.py
+
       - name: Public repo hygiene guard
         run: uv run --locked -- python scripts/qa/check_public_repo_hygiene.py
+
+      - name: Public repo governance guard
+        run: uv run --locked -- python scripts/qa/check_public_repo_governance.py
 
       - name: Lint (critical profile)
         run: make lint
@@ -62,8 +68,36 @@ jobs:
       - name: Typecheck (staged evaluator profile)
         run: make typecheck-staged
 
+      - name: Typecheck (orchestrator + aggregator profile)
+        run: make typecheck-orchestrator
+
+      - name: Typecheck (runner contract profile)
+        run: make typecheck-runner
+
+      - name: Typecheck (core surface profile)
+        run: make typecheck-core-surface
+
+      - name: Typecheck (runtime collaboration/auth/privacy profile)
+        run: make typecheck-runtime-modules
+
+      - name: Typecheck (export + QA profile)
+        run: make typecheck-export-qa
+
+      - name: Typecheck (UI artifact store profile)
+        run: make typecheck-ui-store
+
+      - name: Typecheck (QA + artifact scripts profile)
+        run: make typecheck-scripts
+
+      - name: Typecheck (repo-wide profile)
+        run: make typecheck-repo
+
       - name: Full test suite
         run: make test
+
+      - name: Smoke single-run (runner.py contract)
+        if: matrix.python-version == '3.12'
+        run: make smoke
 
       - name: Smoke suite
         if: matrix.python-version == '3.12'

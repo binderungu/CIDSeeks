@@ -44,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Module boundary map for active-vs-legacy runtime files (`src/simulation/modules/README.md`)
 
 ### Changed
+- Submit-facing repo framing is now tighter: README now presents the repo as the canonical Evaluation-2 SimPy protocol simulator, public snapshot export excludes non-canonical Eval-1/Eval-4 placeholder packages, and freeze docs now tell operators to verify those placeholders are absent from public mirrors
+- Phase F config matrix is now paper-aligned: `paper_core*` PMFA scenarios explicitly compare `dmpo_legacy` vs `dmpo_x`, non-PMFA paper profiles pin `dmpo_x` as the canonical full-stack runtime, and attribution ablations are encoded via `attribution_profile` (`full`, `no_fibd`, `no_split_fail`, `no_coalcorr`)
+- Eval-2 output framing is now more explicit and auditable: run summaries expose `trust_attribution_scope`, `dmpo_x_scope` now distinguishes canonical runtime evidence from partial/no evidence, suite aggregates include attribution metrics, and suite roots now write `batch_manifest.json` plus stats-gate provenance for the active aggregation batch
+- Trust attribution is now paper-aligned: `FIBD`, `SplitFail`, and `CoalCorr` feed an explicit `P_apmfa` runtime penalty, final-tier trust consumes verifier-reconstruction penalty (`final_split_fail_penalty`), and run summaries now export attribution metrics (`fibd_mean`, `split_fail_mean`, `coalcorr_mean`, `apmfa_penalty_mean`)
+- Trust evaluation now emits explicit `REQUEST` / `CHALLENGE` protocol artifacts through node inbox/outbox paths, trust event logs persist `protocol_request_*` / `protocol_response_*` metadata, alarm gate events carry correlated `trust_gate_*`, `alarm_wire_*`, and `trust_gate_delay_ms` fields with a SimPy receive/gate process, and sender-side dissemination now records `alarm_sender_gate` audit events with `sender_gate_*` metadata and configurable SimPy gate delay
+- DMPO-X aliasing is now explicitly recipient+epoch scoped: message IDs and stealth headers stay stable within a configured alias epoch, rotate on epoch boundaries, and carry `privacy_alias_scope` / `privacy_alias_epoch` / `privacy_alias_epoch_rounds` metadata in rendered payloads
+- DMPO-X privacy logs and `eval3_pmfa` datasets now preserve alias/policy-decision evidence (`privacy_policy_decision`, `alias_scope`, `alias_epoch`, `policy_decision_*`) so post-run attacker evaluation can audit why a dissemination policy was selected
+- `eval3_pmfa` datasets now also retain compact selected-policy evidence (`policy_decision_selected_*`, `policy_decision_candidate_count`) and the privacy tests lock in explicit cover-message generation when `r_t > 0`
 - `ci-core` targeted pytest step now runs with `uv run --locked --extra dev -- ...` so clean-checkout CI no longer depends on preinstalled dev extras
 - `make test` now uses `uv run --locked --extra dev -- pytest -q src/tests` for deterministic local parity with CI
 - Smoke suite config (`configs/experiments/experiments_smoke.yaml`) now matches canonical experiment doc baseline (`N=30`, `iterations=200`, 1 benign + 1 malicious scenario)
@@ -128,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GUI `Experiment Summary` now supports aggregate scope by loading canonical suite outputs (`aggregate_summary.csv`, `experiments.csv`, `stats.csv`)
 
 ### Fixed
+- Privacy rendering now retries once without cover traffic when a strategy returns a cover-only payload set, reducing noisy dissemination warnings during freeze runs while preserving a primary alarm path
 - `SimulationEngine.run()` no longer marks interrupted runs as completed (`is_completed` now preserves stop/interruption state)
 - `TrustManager` now initializes optional `trust_plugin` hook to prevent latent attribute errors on legacy helper paths (`process_alarm`)
 - Benign-only smoke scenario no longer emits massive sklearn undefined-metric warnings from AUPRC/AUROC helper path

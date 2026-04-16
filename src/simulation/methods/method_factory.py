@@ -1,6 +1,6 @@
 # src/simulation/methods/method_factory.py
 
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional, cast
 import logging
 from .base_method import BaseMethod
 
@@ -12,10 +12,10 @@ class MethodFactory:
     secara dinamis berdasarkan konfigurasi.
     """
     
-    _registered_methods = {}
+    _registered_methods: Dict[str, type[BaseMethod]] = {}
     
     @classmethod
-    def register_method(cls, method_name: str, method_class: type) -> None:
+    def register_method(cls, method_name: str, method_class: type[BaseMethod]) -> None:
         """
         Mendaftarkan metode baru ke factory.
         
@@ -48,7 +48,7 @@ class MethodFactory:
             return None
         
         try:
-            method_class = cls._registered_methods[method_name]
+            method_class = cast(Any, cls._registered_methods[method_name])
             
             # Handle different method class constructors
             # Some methods may use different constructor signatures
@@ -82,7 +82,7 @@ class MethodFactory:
             return None
     
     @classmethod
-    def get_available_methods(cls) -> list:
+    def get_available_methods(cls) -> list[str]:
         """
         Mendapatkan daftar metode yang tersedia.
         

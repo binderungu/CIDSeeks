@@ -5,9 +5,9 @@ Thank you for your interest in contributing to CIDSeeks! This document provides 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Python 3.8 or higher
+- Python 3.11 or higher (see `pyproject.toml`)
+- `uv` (canonical environment/dependency runner)
 - Git
-- Virtual environment (recommended)
 
 ### Development Setup
 1. Fork the repository
@@ -16,14 +16,14 @@ Thank you for your interest in contributing to CIDSeeks! This document provides 
    git clone https://github.com/your-username/CIDSeeks.git
    cd CIDSeeks
    ```
-3. Create a virtual environment:
+3. Sync project environment (canonical):
    ```bash
-   python -m venv env
-   source env/bin/activate  # On Windows: env\Scripts\activate
+   uv sync --extra dev
    ```
-4. Install development dependencies:
+
+4. Optional lock verification:
    ```bash
-   pip install -r requirements-dev.txt
+   uv lock --check
    ```
 
 ## 📝 Development Guidelines
@@ -37,7 +37,7 @@ Thank you for your interest in contributing to CIDSeeks! This document provides 
 ### Testing
 - Write tests for new features
 - Ensure all tests pass before submitting PR
-- Run tests with: `pytest`
+- Run tests with canonical command: `make test`
 - Aim for high test coverage
 
 ### Documentation
@@ -66,14 +66,41 @@ git checkout -b fix/your-bug-fix
 
 ### 4. Test Your Changes
 ```bash
-# Run tests
-pytest
+# Critical lint gate (matches CI)
+make lint
 
-# Check code style
-ruff check .
+# Staged typecheck gate (matches CI)
+make typecheck-staged
 
-# Run type checking (if applicable)
-mypy src/
+# Orchestrator + aggregator typecheck gate (matches CI)
+make typecheck-orchestrator
+
+# Runner contract typecheck gate (matches CI)
+make typecheck-runner
+
+# Core surface typecheck gate (matches CI, import graph silenced)
+make typecheck-core-surface
+
+# Runtime collaboration/auth/privacy typecheck gate (matches CI, import graph silenced)
+make typecheck-runtime-modules
+
+# Export + QA checker typecheck gate (matches CI)
+make typecheck-export-qa
+
+# UI artifact store typecheck gate (matches CI)
+make typecheck-ui-store
+
+# QA + artifact scripts typecheck gate (matches CI)
+make typecheck-scripts
+
+# Repo-wide typecheck gate (matches CI)
+make typecheck-repo
+
+# Test suite (matches CI)
+make test
+
+# Smoke suite sanity (recommended for runtime/core changes)
+make smoke-suite
 ```
 
 ### 5. Submit a Pull Request
@@ -86,12 +113,14 @@ mypy src/
 
 ```
 CIDSeeks/
-├── src/                    # Source code
-├── tests/                  # Test files
-├── docs/                   # Documentation
-├── evaluation/             # Research evaluation
-├── scripts/                # Utility scripts
-└── requirements*.txt       # Dependencies
+├── src/                    # Source code (simulation + evaluation + UI)
+├── src/tests/              # Test files (canonical)
+├── docs/                   # Canonical docs/runbook/spec/experiments
+├── configs/experiments/    # Suite experiment configs
+├── scripts/                # QA, artifacts, maintenance, UI scripts
+├── results/                # Canonical output artifacts
+├── pyproject.toml          # Canonical metadata/dependencies
+└── uv.lock                 # Reproducibility lockfile
 ```
 
 ## 🐛 Bug Reports
@@ -121,10 +150,7 @@ For research-related contributions:
 
 ## 🤝 Code of Conduct
 
-- Be respectful and inclusive
-- Focus on constructive feedback
-- Help others learn and grow
-- Maintain professional communication
+- See `CODE_OF_CONDUCT.md` for repository-wide policy.
 
 ## 📞 Getting Help
 
@@ -132,5 +158,9 @@ For research-related contributions:
 - Search existing issues
 - Create a new issue for questions
 - Join our discussions
+
+## 🔐 Security Reports
+
+- Please use the process in `SECURITY.md` for vulnerability reporting.
 
 Thank you for contributing to CIDSeeks! 

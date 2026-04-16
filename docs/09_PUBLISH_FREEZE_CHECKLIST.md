@@ -11,8 +11,10 @@ Gunakan checklist ini sebelum repo dibuka publik atau sebelum pengiriman revisi 
 
 Expected:
 - `legacy import guard passed`
+- `time.sleep guard passed`
 - `manifest integrity guard passed`
 - `public repo hygiene guard passed`
+- `public repo governance guard passed`
 
 ## 3) Canonical run sanity
 - Smoke suite:
@@ -34,6 +36,12 @@ Expected:
 ## 6) Documentation consistency checks
 - Scope lock tetap menyatakan Evaluasi-2 hanya: Sybil, Collusion, Betrayal, PMFA.
 - Kontrak output tetap di jalur `results/<suite>/<run_id>/` + `results/_manifests/run_*.json`.
+- Governance/public metadata tersedia dan konsisten:
+  - `SECURITY.md`
+  - `CODE_OF_CONDUCT.md`
+  - `CITATION.cff`
+  - `.github/CODEOWNERS`
+  - `.github/dependabot.yml`
 - Dokumen internal (`AGENTS.md`, `docs/06_CODEX_RULES.md`, `docs/07_THREAD_STARTERS.md`) tidak ikut tracked di branch public.
 - Folder `references/` menyisakan `references/README.md` sebagai policy placeholder; catatan draft/literatur tetap lokal.
 - Catatan kompatibilitas:
@@ -45,6 +53,7 @@ Expected:
   - `results/smoke/stats_gate.json`
   - `results/paper_core/stats_gate.json`
   - `results/artifacts/smoke_artifact_bundle_verify.json`
+- Jika flagship PMFA menjadi angka paper final, arsipkan juga minimal satu contoh `results/<suite>/<run_id>/eval3_pmfa/{*_closed_world.json,*_open_world.json,*_drift.json}` untuk audit attacker-side evidence.
 
 ## 8) Public history safety
 - Pastikan file internal/sensitif tidak hanya dihapus dari working tree, tetapi juga tidak terekspos di history publik.
@@ -58,3 +67,15 @@ Expected:
 - Verifikasi cepat:
   - cek report `/tmp/vibe-cids-public/PUBLIC_EXPORT_REPORT.json`
   - pastikan tidak ada file internal (`AGENTS.md`, `docs/06_CODEX_RULES.md`, `docs/07_THREAD_STARTERS.md`, `references/*.md`)
+  - pastikan placeholder non-canonical tidak ikut (`src/eval1_trust_core/*`, `src/eval4_minitestbed/*`)
+
+## 10) Flagship final freeze (operational runbook)
+- Untuk eksekusi final profile `flagship` (long run + `--resume`) dan handoff private -> mirror publik:
+  - lihat `10_FLAGSHIP_FREEZE_RUNBOOK.md`
+- Wrapper otomatis (disarankan untuk operator):
+  - `make flagship-freeze-final`
+- Dry-run preflight/plan:
+  - `make flagship-freeze-final-dry-run`
+- Catatan penting:
+  - repo private boleh dirty untuk eksplorasi
+  - tetapi untuk **freeze final**, snapshot sebaiknya dibuat dari commit private bersih agar `source_commit` di `PUBLIC_EXPORT_REPORT.json` benar-benar merepresentasikan isi snapshot

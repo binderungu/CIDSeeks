@@ -32,6 +32,7 @@ trust_model:
   trust_rise_threshold: 0.6
   initial_trust: 0.5 # Default starting trust value
   behavior_history_window: 20
+  trust_update_mode: event
   # 3-Level Challenge Specific Weights
   learning_rate: 0.3 # Lambda (Basic Challenge)
   # Dirichlet reputation parameters for advanced tier R_j(t)
@@ -145,9 +146,50 @@ features:
   max_alarm_send_delay: 0.5
   variants_per_alarm: 3
   # Privacy parameters (DMPO)
+  privacy_strategy: dmpo_legacy
   privacy_prefix_bits: 24
   privacy_k_anonymity: 16
   dmpo_pmfa_guard: true
+  privacy:
+    strategy: dmpo_legacy
+    alias_epoch_rounds: 5
+    controller:
+      enabled: false
+      lambda_bw: 0.2
+      lambda_lat: 0.2
+      lambda_privacy: 1.0
+      lambda_budget: 2.0
+      budget_bw: 3.5
+      budget_lat_ms: 350.0
+      candidate_policies:
+        - policy_id: p0
+          K_t: 2
+          f_t: 2
+          ell_t: small
+          d_t: exp_low
+          r_t: 0.0
+        - policy_id: p1
+          K_t: 3
+          f_t: 3
+          ell_t: medium
+          d_t: exp_mid
+          r_t: 0.15
+        - policy_id: p2
+          K_t: 4
+          f_t: 3
+          ell_t: medium
+          d_t: exp_high
+          r_t: 0.30
+  attribution:
+    weights_apmfa:
+      fibd: 0.34
+      split_fail: 0.33
+      coalcorr: 0.33
+    final_split_fail_weight: 0.25
+  ablations:
+    fibd: true
+    split_fail: true
+    coalcorr: true
   # privacy_salt: "cidseeks-default"  # Optional; auto-derived from seed if omitted
 
 output:

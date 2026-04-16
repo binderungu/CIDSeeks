@@ -17,7 +17,7 @@ stats_gate:
 scenarios:
   - scenario_id: pmfa_ci_gate
     attack_type: PMFA
-    notes: "Small non-smoke profile for CI fail-fast gate validation."
+    notes: "Small non-smoke profile for CI fail-fast gate validation on canonical DMPO-X + attribution runtime."
     parameters:
       n_nodes: [30]
       iterations: [40]
@@ -29,6 +29,9 @@ scenarios:
       trust_fall_threshold: [0.5]
       trust_rise_threshold: [0.55]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
+      attribution_profile: [full]
+      auth_mode: [required]
       pmfa_detect_prob: [1.0]
       pmfa_poison_rate: [1.0]
       pmfa_strategy: [honest_on_challenge_malicious_on_request]

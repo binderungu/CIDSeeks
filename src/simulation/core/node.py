@@ -7,11 +7,14 @@ import simpy
 # Import Modul-modul
 from ..modules.database.node_database import NodeDatabase
 from ..modules.trust import TrustCalculator, TrustManager
+from ..modules.trust.observation import Observation
 from ..modules.authentication import AuthenticationModule
 from ..modules.privacy import PrivacyModule
 from ..modules.ids import IdsModule
 from ..modules.collaboration import CollaborationModule
-from ..modules.attacks.behavior_policy import BehaviorPolicy
+from ..modules.attacks.behavior_policy import SelectiveInsiderPolicy
+from ..utils.perf import metric_logger
+from .message import Alarm, Challenge, Message, TrustRequest, TrustResponse
 
 class Node:
     """Represents a node in the CIDS network, delegating functionalities to specialized modules."""
@@ -58,14 +61,16 @@ class Node:
         self.current_iteration = 0
         self.alarm_counter = 0
         self.current_request_alarm_set_id: Optional[str] = None
+        self.protocol_inbox: List[Message] = []
+        self.protocol_outbox: List[Message] = []
         # Initialize trust_scores from config if available, else empty dict
         self.trust_scores: Dict[int, float] = {} 
         # Per-target trust components (basic/advanced/final)
         self.trust_components: Dict[int, Dict[str, float]] = {}
         # Per-target behavior history for biometric-style scoring
-        self.behavior_history = defaultdict(list)
+        self.behavior_history: defaultdict[int, list[float]] = defaultdict(list)
         # Per-target contribution counts (accepted alarms)
-        self.contribution_counts = defaultdict(int)
+        self.contribution_counts: defaultdict[int, int] = defaultdict(int)
         # Quarantine set for low-trust peers
         self.quarantined_nodes: set[int] = set()
         self.alarms: List[Dict[str, Any]] = []
@@ -80,6 +85,9 @@ class Node:
         self.trust_method: str = self._normalize_trust_method(self.trust_config.get('method', '3-level-challenge'))
         # Alias for backward-compatibility (some modules still reference trust_method_name)
         self.trust_method_name: str = self.trust_method
+        self.trust_update_mode = str(self.trust_config.get('trust_update_mode', 'event')).strip().lower()
+        if self.trust_update_mode not in {'event', 'round_batch'}:
+            self.trust_update_mode = 'event'
 
         auth_mode = str(self.auth_config.get('mode', 'required')).strip().lower()
         self.require_auth: bool = auth_mode not in {'off', 'disabled', 'none', 'noauth'}
@@ -119,7 +127,7 @@ class Node:
             feature_config=self.feature_config, 
             trust_method_name=self.trust_method_name
         )
-        self.behavior_policy = BehaviorPolicy(
+        self.behavior_policy = SelectiveInsiderPolicy(
             node=self,
             attack_config=self.attack_config,
             rng=self.rng,
@@ -218,6 +226,171 @@ class Node:
         node = next((n for n in self.neighbors if n.id == node_id), None)
         if not node: return 0.5
         return 0.0 if node.is_malicious else 1.0
+
+    def _record_protocol_message(self, message: Message, peer_id: int, direction: str) -> None:
+        try:
+            payload = message.to_payload()
+        except Exception:
+            payload = {
+                "id": getattr(message, "id", None),
+                "type": getattr(message, "type", None),
+                "data": getattr(message, "data", {}),
+            }
+
+        try:
+            metric_logger.log_message(
+                iteration=int(message.iteration if message.iteration is not None else self.current_iteration),
+                sender_id=int(self.id if direction == "out" else peer_id),
+                receiver_id=int(peer_id if direction == "out" else self.id),
+                message_type=str(message.type),
+                direction=direction,
+                payload_bytes=int(getattr(message, "payload_bytes", 0) or 0),
+                metadata={
+                    "correlation_id": getattr(message, "correlation_id", None),
+                    "msg_kind": payload.get("data", {}).get("msg_kind"),
+                    "challenge_tier": payload.get("data", {}).get("challenge_tier"),
+                    "alarm_set_id": payload.get("data", {}).get("alarm_set_id"),
+                },
+            )
+        except Exception:
+            self.logger.debug("Failed to record protocol message metrics", exc_info=True)
+
+        if self.db:
+            try:
+                self.db.store_event(
+                    timestamp=float(getattr(self.env, "now", 0)),
+                    iteration=int(message.iteration if message.iteration is not None else self.current_iteration),
+                    node_id=self.id,
+                    event_type=f"protocol_message_{direction}",
+                    details=payload,
+                    related_node_id=int(peer_id),
+                )
+            except Exception:
+                self.logger.debug("Failed to store protocol message event", exc_info=True)
+
+    def send_protocol_message(
+        self,
+        target_node: "Node",
+        message: Message,
+        observation: Optional[Observation] = None,
+    ) -> Optional[Message]:
+        self.protocol_outbox.append(message)
+        self._record_protocol_message(message, target_node.id, "out")
+
+        response_message = target_node.receive_protocol_message(
+            message=message,
+            sender=self,
+            observation=observation,
+        )
+        if isinstance(response_message, Message):
+            self.protocol_inbox.append(response_message)
+            self._record_protocol_message(response_message, target_node.id, "in")
+        return response_message
+
+    def receive_protocol_message(
+        self,
+        message: Message,
+        sender: "Node",
+        observation: Optional[Observation] = None,
+    ) -> Optional[Message]:
+        self.protocol_inbox.append(message)
+        self._record_protocol_message(message, sender.id, "in")
+
+        if observation is None:
+            return None
+
+        response_value, flags = self.behavior_policy.respond(
+            observation,
+            source_is_malicious=sender.is_malicious,
+        )
+        response_message = TrustResponse(
+            source_node=str(self.id),
+            target_node=str(sender.id),
+            msg_kind=observation.msg_kind,
+            response_value=response_value,
+            flags=flags,
+            data={
+                "alarm_set_id": observation.alarm_set_id,
+                "challenge_tier": observation.challenge_tier,
+            },
+            correlation_id=message.id,
+            iteration=observation.round_id,
+        )
+        self.protocol_outbox.append(response_message)
+        self._record_protocol_message(response_message, sender.id, "out")
+        return response_message
+
+    def send_alarm_message(self, target_node: "Node", payload: Dict[str, Any]) -> Message:
+        iteration = int(getattr(self, "current_iteration", 0))
+        message_id = str(payload.get("message_id", f"alarm_{self.id}_{target_node.id}_{iteration}"))
+        correlation_id = str(
+            payload.get("alarm_family_id")
+            or payload.get("original_alarm_hash")
+            or message_id
+        )
+        message = Alarm(
+            source_node=str(self.id),
+            target_node=str(target_node.id),
+            data=dict(payload),
+            message_id=message_id,
+            iteration=iteration,
+            correlation_id=correlation_id,
+        )
+        self.protocol_outbox.append(message)
+        self._record_protocol_message(message, target_node.id, "out")
+
+        receive_alarm_message = getattr(target_node, "receive_alarm_message", None)
+        if callable(receive_alarm_message):
+            try:
+                receive_alarm_message(message, sender=self)
+            except Exception:
+                self.logger.debug("Alarm message delivery failed after protocol send", exc_info=True)
+        return message
+
+    def receive_alarm_message(self, message: Message, sender: "Node") -> Dict[str, Any]:
+        self.protocol_inbox.append(message)
+        self._record_protocol_message(message, sender.id, "in")
+        try:
+            return dict(getattr(message, "data", {}) or {})
+        except Exception:
+            return {}
+
+    def send_message(self, target_id: int, payload: Dict[str, Any]) -> Optional[Message]:
+        target_node = next((neighbor for neighbor in self.neighbors if neighbor.id == int(target_id)), None)
+        if target_node is None:
+            self.logger.debug("Target node %s not found in neighbors for send_message", target_id)
+            return None
+
+        message_type = str(payload.get("type", "message")).strip().lower()
+        iteration = int(getattr(self, "current_iteration", 0))
+        if message_type == "challenge":
+            message = Challenge(
+                source_node=str(self.id),
+                target_node=str(target_id),
+                data=dict(payload),
+                iteration=iteration,
+            )
+        elif message_type == "trust_request":
+            message = TrustRequest(
+                source_node=str(self.id),
+                target_node=str(target_id),
+                alarm_set_id=str(payload.get("alarm_set_id", f"req_{self.id}_{iteration}")),
+                data=dict(payload),
+                iteration=iteration,
+            )
+        else:
+            message = Message(
+                id=f"{message_type}_{self.id}_{target_id}_{iteration}",
+                type=message_type,
+                source_node=str(self.id),
+                target_node=str(target_id),
+                data=dict(payload),
+                iteration=iteration,
+            )
+
+        self.protocol_outbox.append(message)
+        self._record_protocol_message(message, int(target_id), "out")
+        return message
     
     @staticmethod
     def _normalize_trust_method(method_name: str) -> str:
@@ -245,17 +418,18 @@ class Node:
                 self.logger.debug(f"Iter {iteration}: No alarm detected by IDS.")
 
             # 2. Update Trust (SEKARANG DI DALAM BLOK TRY UTAMA)
-            self.logger.debug(f"Iter {iteration}: Evaluating trust for all neighbors ({len(self.neighbors)})...") # <-- Pastikan kurung benar
-            evaluated_count = 0
-            for neighbor_node in self.neighbors:
-                try:
-                    # Panggil evaluate untuk setiap tetangga
-                    self.trust_manager.evaluate(neighbor_node)
-                    evaluated_count += 1
-                except Exception as eval_err:
-                    # Log error spesifik per tetangga tapi lanjutkan ke tetangga berikutnya
-                    self.logger.error(f"Iter {iteration}: Error evaluating trust for neighbor {neighbor_node.id}: {eval_err}")
-            self.logger.debug(f"Iter {iteration}: Finished evaluating trust for {evaluated_count}/{len(self.neighbors)} neighbors.")
+            if self.trust_update_mode == "round_batch":
+                self.logger.debug(f"Iter {iteration}: Evaluating trust for all neighbors ({len(self.neighbors)})...")
+                evaluated_count = 0
+                for neighbor_node in self.neighbors:
+                    try:
+                        self.trust_manager.evaluate(neighbor_node)
+                        evaluated_count += 1
+                    except Exception as eval_err:
+                        self.logger.error(f"Iter {iteration}: Error evaluating trust for neighbor {neighbor_node.id}: {eval_err}")
+                self.logger.debug(f"Iter {iteration}: Finished evaluating trust for {evaluated_count}/{len(self.neighbors)} neighbors.")
+            else:
+                self.logger.debug("Iter %s: trust_update_mode=event, skip round-batch evaluation.", iteration)
 
             # ---> SIMULASI WAKTU (TETAP DI DALAM TRY UTAMA) <---
             processing_time = 0.1

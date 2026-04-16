@@ -26,8 +26,9 @@ CARD_SPECS: List[Tuple[str, Tuple[str, ...]]] = [
     ("Trust Gap Final", ("trust_gap_final", "trust_gap")),
     ("Trust Gap AUC", ("trust_gap_auc",)),
     ("Stability τ", ("stability_kendall_tau",)),
-    ("PMFA Success (No Ver)", ("pmfa_success_rate_no_ver",)),
-    ("PMFA Success (With Ver)", ("pmfa_success_rate_with_ver",)),
+    ("PMFA CW Acc (No Ver)", ("pmfa_success_rate_baseline_no_privacy", "pmfa_success_rate_no_ver")),
+    ("PMFA CW Acc (With Ver)", ("pmfa_success_rate_legacy_dmpo", "pmfa_success_rate_with_ver")),
+    ("PMFA CW Acc (DMPO-X)", ("pmfa_success_rate_dmpo_x",)),
 ]
 
 

@@ -10,7 +10,7 @@ stats_gate:
 scenarios:
   - scenario_id: scalability_stress
     attack_type: PMFA
-    notes: "Scalability envelope stress with larger N and short horizon."
+    notes: "Scalability envelope stress with larger N and short horizon on canonical DMPO-X + attribution runtime."
     parameters:
       n_nodes: [1000, 2000, 5000, 10000]
       iterations: [60]
@@ -23,3 +23,6 @@ scenarios:
       forgetting_factor: [0.9]
       network_type: [random, small_world, scale_free, hybrid]
       gossip_fanout: [sqrt, log]
+      privacy_strategy: [dmpo_x]
+      attribution_profile: [full]
+      auth_mode: [required]

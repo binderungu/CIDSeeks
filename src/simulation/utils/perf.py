@@ -36,6 +36,7 @@ class MetricLogger:
         Expected keys: delay_ms, payload_size, variant_id, is_challenge, dmpo_enabled,
         sender_id, receiver_id, iteration, message_id, alarm_hash
         """
+        event.setdefault("event_scope", "wire")
         self.privacy_pmfa_logs.append(event)
 
     def log_message(

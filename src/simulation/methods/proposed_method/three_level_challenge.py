@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import logging
 from ..base_method import BaseMethod
 
@@ -14,7 +14,7 @@ class ThreeLevelChallengeMethod(BaseMethod):
     pattern obfuscation ke dalam framework perbandingan metode.
     """
     
-    def __init__(self, method_name: str = "3-level-challenge", config: Dict[str, Any] = None):
+    def __init__(self, method_name: str = "3-level-challenge", config: Optional[Dict[str, Any]] = None):
         if config is None:
             config = {}
         super().__init__(method_name, config)
@@ -73,12 +73,10 @@ class ThreeLevelChallengeMethod(BaseMethod):
         """
         try:
             self.update_metric('challenges_handled', 1)
+            challenge_data = challenge if isinstance(challenge, dict) else challenge.__dict__
             
             # Gunakan existing challenge manager
             if hasattr(node, 'challenge_manager'):
-                # Extract challenge data
-                challenge_data = challenge if isinstance(challenge, dict) else challenge.__dict__
-                
                 # Process challenge using existing manager
                 response = node.challenge_manager.handle_challenge(challenge_data)
                 return response
@@ -87,7 +85,7 @@ class ThreeLevelChallengeMethod(BaseMethod):
                 return {
                     'type': 'challenge_response',
                     'sender_id': node.id,
-                    'trust_score': node.get_trust_score(challenge.get('sender_id', 0))
+                    'trust_score': node.get_trust_score(int(challenge_data.get('sender_id', 0)))
                 }
                 
         except Exception as e:

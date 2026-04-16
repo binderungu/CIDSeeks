@@ -1,10 +1,15 @@
 {
-  "generated_at_utc": "2026-02-18T22:51:00.098366+00:00",
+  "generated_at_utc": "2026-04-16T01:48:15.132947+00:00",
   "source_repo": "/Users/aditcahyo/Developer/GitHub/research/vibe-cids",
   "source_branch": "main",
-  "source_commit": "40e3691cf8b6434ae9ad4698c469cd5c837e0ba0",
+  "source_commit": "971aa86577601d15057c3cf292726ad5935a3a35",
   "destination": "/private/tmp/vibe-cids-public",
-  "included_files": 138,
-  "excluded_sensitive_files": [],
+  "included_files": 198,
+  "excluded_sensitive_files": [
+    "src/eval1_trust_core/__init__.py",
+    "src/eval1_trust_core/run_eval1.py",
+    "src/eval4_minitestbed/__init__.py",
+    "src/eval4_minitestbed/run_eval4.py"
+  ],
   "include_untracked": true
 }

@@ -3,8 +3,12 @@ import hashlib
 import math
 from typing import TYPE_CHECKING, Dict, Any, Optional, List
 
+from ...core.message import Challenge, Message, TrustRequest
 from .calculator import TrustCalculator
 from .observation import Observation
+from .fibd import FIBDTracker
+from .split_verifier import SplitVerifierTracker
+from .coalcorr import CoalitionCorrelationTracker
 from ...utils.perf import metric_logger
 
 # Hindari circular import penuh, hanya import tipe jika perlu
@@ -32,12 +36,252 @@ class TrustManager:
         self._last_tier_challenge_iteration: Dict[int, Dict[str, int]] = {}
         self._collusion_cfg = self._build_collusion_config()
         self._coordination_history: Dict[int, List[int]] = {}
+        self._ablation_cfg = self._build_ablation_config()
+        self._attribution_cfg = self._build_attribution_config()
+        self._fibd_tracker = FIBDTracker()
+        self._split_tracker = SplitVerifierTracker()
+        self._coalcorr_tracker = CoalitionCorrelationTracker()
+        self._last_evaluation_trace: Dict[int, Dict[str, Any]] = {}
         # Backward-compatible plugin hook (optional; canonical flow uses 3-level challenge).
         self.trust_plugin = getattr(node, 'trust_method_instance', None)
         
         # Only CIDSeeks / 3-level challenge is supported
         self.trust_method = self._normalize_method_name(getattr(node, 'trust_method', '3-level-challenge'))
         self._log_selected_method()
+
+
+    def _build_ablation_config(self) -> Dict[str, bool]:
+        cfg = self.node.feature_config or {}
+        raw = cfg.get('ablations', {}) if isinstance(cfg.get('ablations', {}), dict) else {}
+
+        def _enabled(key: str, default: bool = True) -> bool:
+            val = raw.get(key, default)
+            if isinstance(val, str):
+                return val.strip().lower() not in {'0', 'false', 'off', 'no', 'disabled'}
+            return bool(val)
+
+        return {
+            'fibd': _enabled('fibd', True),
+            'split_fail': _enabled('split_fail', True),
+            'coalcorr': _enabled('coalcorr', True),
+        }
+
+    def _build_attribution_config(self) -> Dict[str, Any]:
+        cfg = self.node.feature_config or {}
+        raw = cfg.get('attribution', {}) if isinstance(cfg.get('attribution', {}), dict) else {}
+        raw_weights = raw.get('weights_apmfa', {}) if isinstance(raw.get('weights_apmfa', {}), dict) else {}
+
+        def _unit_float(value: Any, default: float) -> float:
+            try:
+                return max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                return float(default)
+
+        weights = {
+            'fibd': _unit_float(raw_weights.get('fibd', 1.0 / 3.0), 1.0 / 3.0),
+            'split_fail': _unit_float(raw_weights.get('split_fail', 1.0 / 3.0), 1.0 / 3.0),
+            'coalcorr': _unit_float(raw_weights.get('coalcorr', 1.0 / 3.0), 1.0 / 3.0),
+        }
+        total = sum(weights.values())
+        if total <= 0:
+            weights = {'fibd': 1.0 / 3.0, 'split_fail': 1.0 / 3.0, 'coalcorr': 1.0 / 3.0}
+        else:
+            weights = {key: value / total for key, value in weights.items()}
+
+        return {
+            'weights_apmfa': weights,
+            'final_split_fail_weight': _unit_float(raw.get('final_split_fail_weight', 0.25), 0.25),
+        }
+
+    @staticmethod
+    def _context_bin(msg_kind: str, challenge_tier: Optional[str]) -> str:
+        tier = challenge_tier or 'request'
+        return f"{msg_kind.lower()}::{tier}"
+
+    @staticmethod
+    def _family_id(flags: Dict[str, Any]) -> str:
+        return str(flags.get('alarm_family_id') or flags.get('pmfa_surface_id') or 'default')
+
+    def _active_privacy_strategy(self) -> str:
+        cfg = self.node.feature_config or {}
+        privacy_cfg = cfg.get('privacy', {}) if isinstance(cfg.get('privacy', {}), dict) else {}
+        strategy = str(cfg.get('privacy_strategy') or privacy_cfg.get('strategy') or 'dmpo_legacy').strip().lower()
+        aliases = {
+            'legacy_dmpo': 'dmpo_legacy',
+            'none': 'baseline_no_privacy',
+            'disabled': 'baseline_no_privacy',
+        }
+        normalized = aliases.get(strategy, strategy)
+        if normalized not in {'baseline_no_privacy', 'dmpo_legacy', 'dmpo_x'}:
+            return 'baseline_no_privacy'
+        return normalized
+
+    def _pmfa_policy_metadata(self, base_alarm_set_id: str, target_id: int, iteration: int) -> Dict[str, Any]:
+        strategy = self._active_privacy_strategy()
+        neighbors = getattr(self.node, 'neighbors', []) or []
+        fallback_variants = int(self.node.feature_config.get('variants_per_alarm', 3) or 3)
+        fallback_variants = max(1, min(fallback_variants, 8))
+        min_delay = float(self.node.feature_config.get('min_alarm_send_delay', 0.1) or 0.0)
+        max_delay = float(self.node.feature_config.get('max_alarm_send_delay', min_delay) or min_delay)
+        delay_window_ms = max(0.0, max_delay - min_delay) * 1000.0
+
+        if strategy == 'baseline_no_privacy' or not self._dmpo_pmfa_guard_enabled():
+            return {
+                'policy_id': 'baseline_no_privacy',
+                'K_t': 1,
+                'f_t': 1,
+                'ell_t': 'none',
+                'd_t': 'none',
+                'r_t': 0.0,
+                'delay_window_ms': 0.0,
+                'policy_decision': {},
+                'alias_scope': None,
+                'alias_epoch': None,
+                'alias_epoch_rounds': None,
+            }
+
+        if strategy == 'dmpo_x':
+            privacy_module = getattr(self.node, 'privacy_module', None)
+            if privacy_module is not None and hasattr(privacy_module, 'select_dissemination_policy'):
+                trust_score = float(self.node.trust_scores.get(target_id, self.node.trust_config.get('initial_trust', 0.5)))
+                synthetic_alarm = {
+                    'id': base_alarm_set_id,
+                    'assessment': {'confidence': max(0.0, min(1.0, 1.0 - trust_score))},
+                    'pmfa_surface_iteration': iteration,
+                }
+                try:
+                    policy = privacy_module.select_dissemination_policy(
+                        synthetic_alarm,
+                        trust_scores=[trust_score],
+                        neighbor_count=len(neighbors),
+                    )
+                    trace_getter = getattr(privacy_module, 'last_policy_trace', None)
+                    alias_epoch_getter = getattr(privacy_module, 'alias_epoch', None)
+                    alias_epoch_rounds = getattr(privacy_module, 'alias_epoch_rounds', None)
+                    policy_decision = dict(trace_getter()) if callable(trace_getter) else {}
+                    alias_epoch = alias_epoch_getter(iteration) if callable(alias_epoch_getter) else None
+                    return {
+                        'policy_id': str(getattr(policy, 'policy_id', 'dmpo_x')),
+                        'K_t': int(getattr(policy, 'K_t', fallback_variants)),
+                        'f_t': int(getattr(policy, 'f_t', min(fallback_variants, max(1, len(neighbors))))),
+                        'ell_t': str(getattr(policy, 'ell_t', 'medium')),
+                        'd_t': str(getattr(policy, 'd_t', 'uniform')),
+                        'r_t': float(getattr(policy, 'r_t', 0.0)),
+                        'delay_window_ms': delay_window_ms,
+                        'policy_decision': policy_decision,
+                        'alias_scope': 'recipient_epoch',
+                        'alias_epoch': alias_epoch,
+                        'alias_epoch_rounds': int(alias_epoch_rounds) if alias_epoch_rounds is not None else None,
+                    }
+                except Exception:
+                    self.logger.debug('Failed to derive PMFA policy metadata from privacy module', exc_info=True)
+
+        return {
+            'policy_id': strategy,
+            'K_t': fallback_variants,
+            'f_t': min(fallback_variants, max(1, len(neighbors) or fallback_variants)),
+            'ell_t': 'legacy',
+            'd_t': 'uniform',
+            'r_t': 0.0,
+            'delay_window_ms': delay_window_ms,
+            'policy_decision': {},
+            'alias_scope': None,
+            'alias_epoch': None,
+            'alias_epoch_rounds': None,
+        }
+
+    def _advanced_attribution_terms(
+        self,
+        target_id: int,
+        context_bin: str,
+        family_id: str,
+        response_value: float,
+        observation_flags: Dict[str, Any],
+        *,
+        msg_kind: str,
+        challenge_tier: Optional[str],
+    ) -> Dict[str, Any]:
+        direct_coordination = bool(observation_flags.get('collusion_boost') or observation_flags.get('sybil_boost'))
+        pmfa_predicted_kind = str(observation_flags.get('pmfa_predicted_kind', '') or '').upper() or None
+        pmfa_response = str(observation_flags.get('pmfa_response', '') or '').lower() or None
+        selective_request_poison = pmfa_predicted_kind == 'REQUEST' and pmfa_response == 'malicious'
+        proof_valid_raw = observation_flags.get('challenge_proof_valid')
+        proof_valid = None if proof_valid_raw is None else bool(proof_valid_raw)
+        proof_failure = msg_kind == 'CHALLENGE' and proof_valid is False
+        suspicious_components = [
+            1.0 if direct_coordination else 0.0,
+            1.0 if selective_request_poison else 0.0,
+            1.0 if proof_failure else 0.0,
+        ]
+        suspicious_score = sum(suspicious_components) / float(len(suspicious_components))
+        supportive_action = bool(observation_flags.get('was_forwarded', response_value >= 0.5))
+        split_tier = str(challenge_tier).lower() if msg_kind == 'CHALLENGE' and challenge_tier else None
+        reconstruction_ok = None
+        if split_tier is not None and proof_valid is not None:
+            reconstruction_ok = bool(proof_valid)
+
+        self._fibd_tracker.observe(
+            peer_id=target_id,
+            context_bin=context_bin,
+            family_id=family_id,
+            response_value=float(response_value),
+            supportive_action=supportive_action,
+            proof_valid=proof_valid,
+            pmfa_predicted_kind=pmfa_predicted_kind,
+            pmfa_response=pmfa_response,
+        )
+        if reconstruction_ok is not None:
+            self._split_tracker.observe(peer_id=target_id, reconstruction_ok=reconstruction_ok, tier=split_tier)
+        self._coalcorr_tracker.observe(peer_id=target_id, context_bin=context_bin, suspicious_score=suspicious_score)
+
+        fibd = self._fibd_tracker.score(target_id, context_bin) if self._ablation_cfg.get('fibd', True) else 0.0
+        split_fail = (
+            self._split_tracker.fail_rate(target_id, tier=split_tier)
+            if self._ablation_cfg.get('split_fail', True)
+            else 0.0
+        )
+        coalcorr = self._coalcorr_tracker.score(target_id, context_bin) if self._ablation_cfg.get('coalcorr', True) else 0.0
+        apmfa_penalty, enabled_signal_count = self._weighted_apmfa_penalty(
+            fibd=fibd,
+            split_fail=split_fail,
+            coalcorr=coalcorr,
+        )
+
+        return {
+            'fibd': fibd,
+            'split_fail': split_fail,
+            'coalcorr': coalcorr,
+            'apmfa_penalty': apmfa_penalty,
+            'enabled_signal_count': enabled_signal_count,
+            'suspicion_score': suspicious_score,
+            'reconstruction_ok': reconstruction_ok,
+            'context_bin': context_bin,
+            'family_id': family_id,
+            'split_tier': split_tier,
+        }
+
+    def _weighted_apmfa_penalty(self, *, fibd: float, split_fail: float, coalcorr: float) -> tuple[float, int]:
+        weights = self._attribution_cfg.get('weights_apmfa', {})
+        terms = {
+            'fibd': max(0.0, min(1.0, float(fibd))),
+            'split_fail': max(0.0, min(1.0, float(split_fail))),
+            'coalcorr': max(0.0, min(1.0, float(coalcorr))),
+        }
+
+        weighted = 0.0
+        enabled_weight = 0.0
+        enabled_count = 0
+        for key, value in terms.items():
+            if not self._ablation_cfg.get(key, True):
+                continue
+            weight = float(weights.get(key, 0.0) or 0.0)
+            weighted += weight * value
+            enabled_weight += weight
+            enabled_count += 1
+
+        if enabled_weight <= 0:
+            return 0.0, 0
+        return max(0.0, min(1.0, weighted / enabled_weight)), enabled_count
 
     def _build_dirichlet_config(self) -> Dict[str, Any]:
         cfg = self.node.trust_config or {}
@@ -371,6 +615,8 @@ class TrustManager:
         return bool(raw)
 
     def _request_pmfa_surface(self, base_alarm_set_id: str, target_id: int, iteration: int) -> tuple[str, Dict[str, Any]]:
+        strategy = self._active_privacy_strategy()
+        policy = self._pmfa_policy_metadata(base_alarm_set_id, target_id, iteration)
         if not self._dmpo_pmfa_guard_enabled():
             return base_alarm_set_id, {
                 "dmpo_enabled": False,
@@ -379,13 +625,17 @@ class TrustManager:
                 "dmpo_delay_window_ms": 0.0,
                 "alarm_family_id": base_alarm_set_id,
                 "pmfa_surface_id": base_alarm_set_id,
+                "privacy_strategy": "baseline_no_privacy",
+                "privacy_policy": policy,
+                "privacy_policy_decision": policy.get("policy_decision"),
+                "privacy_alias_scope": policy.get("alias_scope"),
+                "privacy_alias_epoch": policy.get("alias_epoch"),
+                "privacy_alias_epoch_rounds": policy.get("alias_epoch_rounds"),
             }
 
-        variants = int(self.node.feature_config.get("variants_per_alarm", 3) or 3)
+        variants = int(policy.get("K_t", self.node.feature_config.get("variants_per_alarm", 3) or 3))
         variants = max(1, min(variants, 8))
-        min_delay = float(self.node.feature_config.get("min_alarm_send_delay", 0.1) or 0.0)
-        max_delay = float(self.node.feature_config.get("max_alarm_send_delay", min_delay) or min_delay)
-        delay_window_ms = max(0.0, max_delay - min_delay) * 1000.0
+        delay_window_ms = float(policy.get("delay_window_ms", 0.0) or 0.0)
         salt = str(self.node.feature_config.get("privacy_salt", "cidseeks"))
 
         idx_seed = f"{salt}|{self.node.id}|{target_id}|{iteration}|{base_alarm_set_id}"
@@ -404,6 +654,12 @@ class TrustManager:
             "dmpo_delay_window_ms": delay_window_ms,
             "alarm_family_id": base_alarm_set_id,
             "pmfa_surface_id": surface_id,
+            "privacy_strategy": strategy,
+            "privacy_policy": policy,
+            "privacy_policy_decision": policy.get("policy_decision"),
+            "privacy_alias_scope": policy.get("alias_scope"),
+            "privacy_alias_epoch": policy.get("alias_epoch"),
+            "privacy_alias_epoch_rounds": policy.get("alias_epoch_rounds"),
         }
 
     def _get_thresholds(self) -> tuple[float, float, float]:
@@ -438,6 +694,102 @@ class TrustManager:
         window = int(self.node.trust_config.get('behavior_history_window', 20) or 20)
         if window > 0 and len(history) > window:
             del history[:-window]
+
+    def _build_protocol_request_message(self, observation: Observation) -> Message:
+        payload = {
+            'msg_kind': observation.msg_kind,
+            'alarm_set_id': observation.alarm_set_id,
+            'challenge_tier': observation.challenge_tier,
+            'challenge_payload': observation.challenge_payload,
+            'flags': dict(observation.flags),
+        }
+        message_id = f"{observation.msg_kind.lower()}_{self.node.id}_{observation.dst_id}_{observation.round_id}"
+        if observation.is_challenge:
+            payload['level'] = observation.challenge_tier
+            return Challenge(
+                source_node=str(self.node.id),
+                target_node=str(observation.dst_id),
+                data=payload,
+                message_id=message_id,
+                iteration=observation.round_id,
+                correlation_id=observation.alarm_set_id,
+            )
+        return TrustRequest(
+            source_node=str(self.node.id),
+            target_node=str(observation.dst_id),
+            alarm_set_id=observation.alarm_set_id,
+            data=payload,
+            message_id=message_id,
+            iteration=observation.round_id,
+            correlation_id=observation.alarm_set_id,
+        )
+
+    @staticmethod
+    def _extract_protocol_response(response_message: Any) -> Optional[tuple[float, Dict[str, Any]]]:
+        if not isinstance(response_message, Message):
+            return None
+        data = getattr(response_message, 'data', {}) or {}
+        try:
+            response_value = float(data.get('response_value'))
+        except (TypeError, ValueError):
+            return None
+        flags = data.get('flags', {})
+        if not isinstance(flags, dict):
+            flags = {}
+        return response_value, dict(flags)
+
+    def _dispatch_protocol_observation(
+        self,
+        target_node: 'Node',
+        observation: Observation,
+    ) -> tuple[Message, Optional[Message], float, Dict[str, Any]]:
+        request_message = self._build_protocol_request_message(observation)
+        send_protocol = getattr(self.node, 'send_protocol_message', None)
+        if callable(send_protocol):
+            try:
+                response_message = send_protocol(target_node, request_message, observation)
+                extracted = self._extract_protocol_response(response_message)
+                if extracted is not None:
+                    response_value, flags = extracted
+                    return request_message, response_message, response_value, flags
+            except Exception:
+                self.logger.debug("Protocol message dispatch failed; falling back to direct behavior call", exc_info=True)
+
+        response_value, flags = target_node.behavior_policy.respond(
+            observation,
+            source_is_malicious=self.node.is_malicious,
+        )
+        return request_message, None, response_value, flags
+
+    @staticmethod
+    def _protocol_event_fields(flags: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'protocol_request_id': flags.get('protocol_request_id'),
+            'protocol_request_type': flags.get('protocol_request_type'),
+            'protocol_request_correlation_id': flags.get('protocol_request_correlation_id'),
+            'protocol_response_id': flags.get('protocol_response_id'),
+            'protocol_response_type': flags.get('protocol_response_type'),
+            'protocol_response_correlation_id': flags.get('protocol_response_correlation_id'),
+        }
+
+    @staticmethod
+    def _attribution_event_fields(terms: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'fibd': terms.get('fibd', 0.0),
+            'split_fail': terms.get('split_fail', 0.0),
+            'coalcorr': terms.get('coalcorr', 0.0),
+            'apmfa_penalty': terms.get('apmfa_penalty', 0.0),
+            'attribution_signal_count': terms.get('enabled_signal_count', 0),
+            'attribution_suspicion_score': terms.get('suspicion_score', 0.0),
+            'attribution_reconstruction_ok': terms.get('reconstruction_ok'),
+            'attribution_context_bin': terms.get('context_bin'),
+            'attribution_family_id': terms.get('family_id'),
+            'attribution_split_tier': terms.get('split_tier'),
+        }
+
+    def get_last_evaluation_trace(self, target_id: int) -> Dict[str, Any]:
+        trace = self._last_evaluation_trace.get(int(target_id), {})
+        return dict(trace)
 
     def evaluate(self, target_node: 'Node') -> float:
         """
@@ -481,14 +833,15 @@ class TrustManager:
         prev_total = self.node.trust_scores.get(target_id, initial_trust)
 
         # --- Message kind (CHALLENGE vs REQUEST) for this evaluation ---
-        challenge_tier = self._select_challenge_tier(prev_total)
-        challenge_rate_used = self._resolve_tier_challenge_rate(challenge_tier)
-        challenge_interval_used = self._resolve_tier_min_interval(challenge_tier)
+        selected_challenge_tier = self._select_challenge_tier(prev_total)
+        challenge_rate_used = self._resolve_tier_challenge_rate(selected_challenge_tier)
+        challenge_interval_used = self._resolve_tier_min_interval(selected_challenge_tier)
         msg_kind = self._select_msg_kind(
             target_id=target_id,
-            challenge_tier=challenge_tier,
+            challenge_tier=selected_challenge_tier,
             iteration=iteration,
         )
+        challenge_tier: Optional[str] = selected_challenge_tier
         challenge_payload: Optional[Dict[str, Any]] = None
         observation_flags: Dict[str, Any]
         if msg_kind == "REQUEST":
@@ -500,9 +853,11 @@ class TrustManager:
             )
             challenge_tier = None
         else:
-            alarm_set_id = f"chal_{self.node.id}_{target_id}_{iteration}_{challenge_tier}"
+            alarm_set_id = f"chal_{self.node.id}_{target_id}_{iteration}_{selected_challenge_tier}"
+            privacy_strategy = self._active_privacy_strategy()
+            privacy_policy = self._pmfa_policy_metadata(alarm_set_id, target_id, iteration)
             challenge_payload = self._build_challenge_payload(
-                challenge_tier=challenge_tier,
+                challenge_tier=selected_challenge_tier,
                 target_id=target_id,
                 iteration=iteration,
                 alarm_set_id=alarm_set_id,
@@ -514,6 +869,12 @@ class TrustManager:
                 "dmpo_delay_window_ms": 0.0,
                 "alarm_family_id": alarm_set_id,
                 "pmfa_surface_id": alarm_set_id,
+                "privacy_strategy": privacy_strategy,
+                "privacy_policy": privacy_policy,
+                "privacy_policy_decision": privacy_policy.get("policy_decision"),
+                "privacy_alias_scope": privacy_policy.get("alias_scope"),
+                "privacy_alias_epoch": privacy_policy.get("alias_epoch"),
+                "privacy_alias_epoch_rounds": privacy_policy.get("alias_epoch_rounds"),
             }
 
         observation = Observation(
@@ -528,10 +889,17 @@ class TrustManager:
             flags=dict(observation_flags),
         )
 
-        response_value, flags = target_node.behavior_policy.respond(
-            observation,
-            source_is_malicious=self.node.is_malicious,
+        request_message, response_message, response_value, flags = self._dispatch_protocol_observation(
+            target_node=target_node,
+            observation=observation,
         )
+        observation.flags['protocol_request_id'] = request_message.id
+        observation.flags['protocol_request_type'] = request_message.type
+        observation.flags['protocol_request_correlation_id'] = request_message.correlation_id
+        if response_message is not None:
+            observation.flags['protocol_response_id'] = response_message.id
+            observation.flags['protocol_response_type'] = response_message.type
+            observation.flags['protocol_response_correlation_id'] = response_message.correlation_id
         if flags:
             observation.flags.update(flags)
         response_value = self._score_challenge_response(
@@ -564,9 +932,45 @@ class TrustManager:
                     'iteration': iteration,
                     'message_id': alarm_set_id,
                     'alarm_hash': observation.flags.get('alarm_family_id', alarm_set_id),
+                    'privacy_strategy': observation.flags.get('privacy_strategy', self._active_privacy_strategy()),
+                    'privacy_policy': observation.flags.get('privacy_policy'),
+                    'privacy_policy_decision': observation.flags.get('privacy_policy_decision'),
+                    'privacy_alias_scope': observation.flags.get('privacy_alias_scope'),
+                    'privacy_alias_epoch': observation.flags.get('privacy_alias_epoch'),
+                    'privacy_alias_epoch_rounds': observation.flags.get('privacy_alias_epoch_rounds'),
+                    'dmpo_variants': observation.flags.get('dmpo_variants'),
+                    'dmpo_variant_index': observation.flags.get('dmpo_variant_index'),
+                    'dmpo_delay_window_ms': observation.flags.get('dmpo_delay_window_ms'),
+                    'msg_kind': msg_kind,
+                    'challenge_tier': challenge_tier,
+                    'event_scope': 'internal',
                 })
         except Exception:
             self.logger.debug("Failed to log challenge privacy event", exc_info=True)
+
+        context_bin = self._context_bin(msg_kind=msg_kind, challenge_tier=challenge_tier)
+        family_id = self._family_id(observation.flags)
+        advanced_terms = self._advanced_attribution_terms(
+            target_id=target_id,
+            context_bin=context_bin,
+            family_id=family_id,
+            response_value=response_value,
+            observation_flags=observation.flags,
+            msg_kind=msg_kind,
+            challenge_tier=challenge_tier,
+        )
+        observation.flags.update({
+            'attribution_fibd': advanced_terms.get('fibd', 0.0),
+            'attribution_split_fail': advanced_terms.get('split_fail', 0.0),
+            'attribution_coalcorr': advanced_terms.get('coalcorr', 0.0),
+            'attribution_apmfa_penalty': advanced_terms.get('apmfa_penalty', 0.0),
+            'attribution_signal_count': advanced_terms.get('enabled_signal_count', 0),
+            'attribution_suspicion_score': advanced_terms.get('suspicion_score', 0.0),
+            'attribution_reconstruction_ok': advanced_terms.get('reconstruction_ok'),
+            'attribution_context_bin': advanced_terms.get('context_bin'),
+            'attribution_family_id': advanced_terms.get('family_id'),
+            'attribution_split_tier': advanced_terms.get('split_tier'),
+        })
 
         # Store observation to DB if available
         if self.node.db:
@@ -593,9 +997,11 @@ class TrustManager:
                         'pmfa_surface_id': observation.flags.get('pmfa_surface_id'),
                         'sybil_identity_id': observation.flags.get('sybil_identity_id'),
                         'sybil_identity_pool_size': observation.flags.get('sybil_identity_pool_size'),
+                        **self._protocol_event_fields(observation.flags),
                         'flags': observation.flags,
                         'challenge_rate_used': challenge_rate_used,
                         'challenge_interval_used': challenge_interval_used,
+                        **self._attribution_event_fields(advanced_terms),
                     },
                     related_node_id=target_id,
                 )
@@ -645,22 +1051,33 @@ class TrustManager:
                 reputation=reputation,
                 contribution=contribution,
                 penalty=penalty,
-                weights=self.node.weights
+                weights=self.node.weights,
+                advanced_terms=advanced_terms,
             )
 
         # Final trust updates only on final challenges
         final_trust = prev_final
         auth_status = None
         biometric_score = None
+        final_split_fail_penalty = 0.0
         if msg_kind == "CHALLENGE" and challenge_tier == "final":
             auth_success = self.node.authenticate(target_node)
             auth_status = 1.0 if auth_success else 0.0
             biometric_score = self.node.calculate_biometric(target_node)
+            final_split_fail_penalty = max(
+                0.0,
+                min(
+                    1.0,
+                    float(self._attribution_cfg.get('final_split_fail_weight', 0.25))
+                    * float(advanced_terms.get('split_fail', 0.0)),
+                ),
+            )
             final_trust = self.calculator.calculate_final_challenge_score(
                 prev_trust=prev_final,
                 auth_status=auth_status,
                 biometric_score=biometric_score,
-                weights=self.node.weights
+                weights=self.node.weights,
+                attribution_penalty=final_split_fail_penalty,
             )
 
         # --- Combine Scores --- 
@@ -694,7 +1111,7 @@ class TrustManager:
         if self.node.db:
             try:
                 ts = float(getattr(self.node.env, 'now', 0))
-                ev_base = {
+                ev_base: Dict[str, Any] = {
                     'timestamp': ts,
                     'iteration': iteration,
                     'node_id': self.node.id,
@@ -718,9 +1135,12 @@ class TrustManager:
                         'sybil_identity_pool_size': observation.flags.get('sybil_identity_pool_size'),
                         'challenge_proof_type': observation.flags.get('challenge_proof_type'),
                         'challenge_proof_valid': observation.flags.get('challenge_proof_valid'),
+                        **self._protocol_event_fields(observation.flags),
                         'response_value': response_value,
                         'challenge_rate_used': challenge_rate_used,
                         'challenge_interval_used': challenge_interval_used,
+                        **self._attribution_event_fields(advanced_terms),
+                        'final_split_fail_penalty': final_split_fail_penalty,
                     },
                 )
                 # Advanced challenge event
@@ -745,8 +1165,11 @@ class TrustManager:
                         'sybil_identity_pool_size': observation.flags.get('sybil_identity_pool_size'),
                         'challenge_proof_type': observation.flags.get('challenge_proof_type'),
                         'challenge_proof_valid': observation.flags.get('challenge_proof_valid'),
+                        **self._protocol_event_fields(observation.flags),
                         'challenge_rate_used': challenge_rate_used,
                         'challenge_interval_used': challenge_interval_used,
+                        **self._attribution_event_fields(advanced_terms),
+                        'final_split_fail_penalty': final_split_fail_penalty,
                     },
                 )
                 # Final challenge event
@@ -768,8 +1191,11 @@ class TrustManager:
                         'sybil_identity_pool_size': observation.flags.get('sybil_identity_pool_size'),
                         'challenge_proof_type': observation.flags.get('challenge_proof_type'),
                         'challenge_proof_valid': observation.flags.get('challenge_proof_valid'),
+                        **self._protocol_event_fields(observation.flags),
                         'challenge_rate_used': challenge_rate_used,
                         'challenge_interval_used': challenge_interval_used,
+                        **self._attribution_event_fields(advanced_terms),
+                        'final_split_fail_penalty': final_split_fail_penalty,
                     },
                 )
                 # Aggregate challenge outcome for analytics
@@ -799,9 +1225,12 @@ class TrustManager:
                         'sybil_identity_pool_size': observation.flags.get('sybil_identity_pool_size'),
                         'challenge_proof_type': observation.flags.get('challenge_proof_type'),
                         'challenge_proof_valid': observation.flags.get('challenge_proof_valid'),
+                        **self._protocol_event_fields(observation.flags),
                         'response_value': response_value,
                         'challenge_rate_used': challenge_rate_used,
                         'challenge_interval_used': challenge_interval_used,
+                        **self._attribution_event_fields(advanced_terms),
+                        'final_split_fail_penalty': final_split_fail_penalty,
                     },
                 )
             except Exception as evt_err:
@@ -816,12 +1245,34 @@ class TrustManager:
                 # Need attack_start_tick attribute; fallback to 0 if absent
                 attack_start = getattr(target_node, 'attack_start_tick', 0)
                 current_tick = getattr(self.node.env, 'now', 0)
-                from simulation.utils.perf import metric_logger  # absolute import, avoid package mismatch
                 metric_logger.latencies.append(current_tick - attack_start)
 
         # --- Update Node's State and Log --- 
         # Manager memberitahu Node untuk update skor internalnya
         self.node.trust_scores[target_id] = total_trust 
+        self._last_evaluation_trace[target_id] = {
+            'source_id': self.node.id,
+            'target_id': target_id,
+            'iteration': iteration,
+            'msg_kind': msg_kind,
+            'alarm_set_id': alarm_set_id,
+            'challenge_tier': challenge_tier,
+            'protocol_request_id': observation.flags.get('protocol_request_id'),
+            'protocol_request_type': observation.flags.get('protocol_request_type'),
+            'protocol_request_correlation_id': observation.flags.get('protocol_request_correlation_id'),
+            'protocol_response_id': observation.flags.get('protocol_response_id'),
+            'protocol_response_type': observation.flags.get('protocol_response_type'),
+            'protocol_response_correlation_id': observation.flags.get('protocol_response_correlation_id'),
+            'pmfa_surface_id': observation.flags.get('pmfa_surface_id'),
+            'response_value': response_value,
+            'trust_before': prev_total,
+            'trust_after': total_trust,
+            'fibd': advanced_terms.get('fibd', 0.0),
+            'split_fail': advanced_terms.get('split_fail', 0.0),
+            'coalcorr': advanced_terms.get('coalcorr', 0.0),
+            'apmfa_penalty': advanced_terms.get('apmfa_penalty', 0.0),
+            'final_split_fail_penalty': final_split_fail_penalty,
+        }
         # Log dari manager
         self.logger.debug(f"3-Level Challenge: Evaluated trust for Node {target_id}: {total_trust:.4f} "
                        f"(B: {basic_trust:.4f}, A: {advanced_trust:.4f}, F: {final_trust:.4f}) at Iteration {iteration}")
@@ -847,6 +1298,9 @@ class TrustManager:
                         'dense_subgraph_penalty': dense_subgraph_penalty,
                         'coordination_ratio': coordination_ratio,
                         'challenge_tier': challenge_tier,
+                        **self._attribution_event_fields(advanced_terms),
+                        'final_split_fail_penalty': final_split_fail_penalty,
+                        **self._protocol_event_fields(observation.flags),
                     },
                 )
             except Exception as metrics_exc:

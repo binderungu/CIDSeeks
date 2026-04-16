@@ -47,6 +47,8 @@ Expected:
 
 ### 3.2 Smoke suite (batch kecil)
 - `uv run --locked -- python simulate.py --suite smoke --config configs/experiments/experiments_smoke.yaml`
+- Targeted DMPO-X runtime smoke:
+  `uv run --locked -- python simulate.py --suite smoke --config configs/experiments/experiments_smoke_dmpox.yaml`
 
 ### 3.3 Paper core suite (subset cepat untuk dev)
 - `uv run --locked -- python simulate.py --suite paper_core --config configs/experiments/experiments_batch_quick.yaml`
@@ -79,6 +81,8 @@ Expected (template default):
 ### 3.8 Optional flags (output safety)
 - `--overwrite`: default **off**. Jika folder run sudah ada, run gagal untuk mencegah overwrite tak sengaja.
 - `--manifest-keep-last N`: simpan hanya N manifest terbaru di `results/_manifests/`.
+- `--resume`: untuk `simulate.py`, pakai artifact run yang sudah lengkap (berdasarkan `experiment_id`) dan skip eksekusi ulang; cocok untuk melanjutkan sweep panjang yang sempat terhenti.
+- `--resume` **tidak boleh** digabung dengan `--overwrite` (konflik semantik).
 
 ### 3.9 Acceptance matrix (4 attack × 4 profile, multi-seed)
 - `uv run --locked -- python scripts/qa/acceptance_attack_gap.py --seeds 101 202 303 --tolerance 0.04`
@@ -97,8 +101,12 @@ Expected (template default):
   - `uv run --locked -- python scripts/qa/check_no_legacy_imports.py`
 - Cek guard determinisme RNG (larang RNG constructor tanpa seed eksplisit):
   - `uv run --locked -- python scripts/qa/check_deterministic_rng.py`
+- Cek guard SimPy runtime (larang `time.sleep` di jalur runtime/simulator canonical):
+  - `uv run --locked -- python scripts/qa/check_no_time_sleep.py`
 - Cek integritas manifest run + konsistensi artifact kanonis:
   - `uv run --locked -- python scripts/qa/check_manifest_integrity.py`
+- Cek baseline governance/public metadata (SECURITY/CITATION/CODEOWNERS/CI workflows):
+  - `uv run --locked -- python scripts/qa/check_public_repo_governance.py`
 - Cek gate statistik suite:
   - `uv run --locked -- python scripts/qa/check_stats_gate.py --path results/<suite>/stats_gate.json`
 - Build bundle artifact:
@@ -123,7 +131,7 @@ Expected (template default):
 ## 5) Compliance guardrail (opsional)
 Jika target tersedia di Makefile:
 - `make compliance`
-  - mencakup: `check_no_legacy_imports.py` + `check_no_shell_true.py` + `check_safe_tar_extract.py` + `check_deterministic_rng.py` + `check_manifest_integrity.py` + `check_public_repo_hygiene.py`
+  - mencakup: `check_no_legacy_imports.py` + `check_no_shell_true.py` + `check_safe_tar_extract.py` + `check_deterministic_rng.py` + `check_no_time_sleep.py` + `check_manifest_integrity.py` + `check_public_repo_hygiene.py` + `check_public_repo_governance.py`
 - `make reproduce`
 - `make ci-core-local`
 - `make ci-paper-core-gate-local`
@@ -134,6 +142,7 @@ Jika target tersedia di Makefile:
   - `config_resolved.yaml` (resolved defaults + overrides)
   - `summary.csv` (1 baris per seed)
   - `metrics_raw.(parquet|csv)`
+  - `eval3_pmfa/` (khusus PMFA: dataset CSV/JSONL serta hasil closed/open/drift attacker evaluation)
   - `figures/` (untuk suite paper_core minimal)
 - `results/<suite>/seed_manifest.json` (rencana seed resolved untuk semua run suite)
 - `results/<suite>/stats_gate.json` (hasil gate reproducibility/statistics)

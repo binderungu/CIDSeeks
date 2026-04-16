@@ -19,6 +19,8 @@ DEFAULT_DENY_PATTERNS = [
     "docs/06_CODEX_RULES.md",
     "docs/07_THREAD_STARTERS.md",
     "references/*.md",
+    "src/eval1_trust_core/*",
+    "src/eval4_minitestbed/*",
 ]
 DEFAULT_ALLOW_PATTERNS = [
     "references/README.md",

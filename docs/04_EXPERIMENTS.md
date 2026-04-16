@@ -2,9 +2,13 @@
 
 ## Scope (WAJIB dibaca)
 Dokumen ini mengatur eksperimen untuk **Evaluasi-2: simulasi full protocol CIDSeeks berbasis SimPy**.
-- Fokus: dinamika end-to-end (asynchronous messaging, topologi jaringan, gossip fanout, privacy guard, trust gating, authentication, dan efek serangan).
+- Fokus: dinamika end-to-end (asynchronous messaging, topologi jaringan, gossip fanout, privacy strategy, trust gating, authentication, dan efek serangan).
 - Tidak termasuk: eksperimen “round-based core model validation” (Evaluasi-1) dan tidak termasuk simulator lain di project berbeda.
 - Batas threat model untuk klaim empiris di repo ini: **Sybil, Collusion, Betrayal, PMFA**. Referensi serangan lain (mis. newcomer/pollution) diperlakukan sebagai konteks literatur, bukan hasil eksperimen canonical.
+- Framing paper terbaru yang dipakai repo:
+  - repo ini adalah **canonical Evaluation-2 protocol simulator**,
+  - trace runtime-nya dipakai sebagai input **Eval-3 attacker-side metadata evaluation**,
+  - kontribusi sistem dibaca sebagai **obfuscation + attribution**, bukan hanya randomisasi pesan.
 
 Tujuan dokumen: menjadi kontrak implementasi untuk Codex agar:
 1) eksperimen mudah dijalankan ulang (reproducible),
@@ -29,7 +33,13 @@ Setiap node menjalankan modul: IDS, Collaborator, Authentication, Trust, Privacy
 Kebijakan kolaborasi:
 - Saat IDS lokal memicu alarm, node memilih peer yang trust-nya di atas threshold τ (trust gating).
 - Dissemination memakai controlled gossip, fan-out kira-kira √N.
-- Privacy guard membuat **3 varian sintaks** per alarm, plus random delay Δ untuk mengaburkan timing/fingerprint.
+- Privacy layer memakai **privacy strategy** yang dipilih via konfigurasi (`dmpo_legacy` atau `dmpo_x`), termasuk variasi payload dan delay untuk mengaburkan timing/fingerprint.
+  - Untuk scope Evaluasi-2 canonical saat ini, `dmpo_x` merealisasikan **DMPO-X runtime path**: recipient-scoped aliasing, epoch-scoped alias rotation, opaque stealth header, hidden-equivalent family rendering, dan budget-aware policy selection.
+- Trust layer memakai three-tier challenge, dan pada tier advanced/final mengekspor sinyal attribution:
+  - `FIBD`: divergence antar hidden-equivalent families,
+  - `SplitFail`: verifier reconstruction failure,
+  - `CoalCorr`: coalition-aware residual coordination,
+  - agregat `P_apmfa`: penalty attribution yang dipakai di runtime.
 - Ada periodic refresh trust table setiap P ticks, off the critical path.
 
 (Ini semua harus tercermin dalam event dan metrik end-to-end.)
@@ -50,10 +60,14 @@ CIDSeeks tetap stabil di bawah 4 serangan insider:
 Catatan: PMFA literatur menunjukkan node jahat bisa menjaga trust di atas threshold sambil menaikkan false rate alarm aggregation, jadi simulasi harus bisa memunculkan efek ini bila proteksi dimatikan. (rationale threat realism)
 
 ### C3 — Scalability envelope (N besar)
-Biaya komputasi per message tetap ringan, traffic sub-linear mengikuti desain (√N fanout, 3 varian, refresh periodik P), dan runtime masih masuk akal sampai N besar (misal 10^4) pada laptop komoditas.
+Biaya komputasi per message tetap ringan, traffic sub-linear mengikuti desain (√N fanout, strategy-driven privacy overhead, refresh periodik P), dan runtime masih masuk akal sampai N besar (misal 10^4) pada laptop komoditas.
 
 ### C4 — Privacy-overhead tradeoff
-Privacy guard (delay Δ dan 3 varian) menurunkan peluang fingerprinting dan linkage, dengan overhead latensi/traffic yang terukur.
+Privacy strategy (delay Δ dan variasi payload sesuai strategy) menurunkan peluang fingerprinting dan linkage, dengan overhead latensi/traffic yang terukur.
+Catatan framing klaim: artifact canonical menghasilkan evidence attacker-side lewat **Eval-3 metadata attacker pipeline** yang berjalan post-run di atas `privacy_pmfa_logs`; runtime SimPy tetap diposisikan sebagai protocol simulator, bukan shadow attacker in-loop.
+
+### C4b — Attribution under residual leakage
+Ketika A-PMFA masih bisa melakukan selective-response secara parsial, trust engine harus menaikkan evidence attribution (`FIBD`, `SplitFail`, `CoalCorr`, `P_apmfa`) dan menurunkan trust attacker lebih cepat daripada baseline tanpa attribution.
 
 ### C5 — Robustness (sensitivity)
 Hasil tidak “rapuh” terhadap variasi topologi (random/small-world/scale-free/mesh/hybrid), rate alarm, rasio malicious, dan parameter trust/refresh.
@@ -107,6 +121,11 @@ Wajib: validasi konektivitas (largest connected component) sebelum run.
 - privacy_prefix_bits: {16, 24} (prefix-preserving hash)
 - privacy_k_anonymity: {8, 16, 32} (k-anon untuk atribut sensitif)
 - dmpo_pmfa_guard: {true, false} (aktifkan/disable PMFA fingerprint surface masking)
+- attribution ablations:
+  - `fibd`: {true, false}
+  - `split_fail`: {true, false}
+  - `coalcorr`: {true, false}
+  - `final_split_fail_weight`: sensitivity di sekitar baseline config
 
 Kalibrasi profil quick (dev):
 - Gunakan `trust_threshold=0.55`, `trust_fall_threshold=0.45`, `trust_rise_threshold=0.50`
@@ -145,6 +164,7 @@ Model minimal:
 - efek yang ingin terlihat saat proteksi lemah: trust attacker tetap di atas threshold sambil false rate alarm aggregation naik (baseline literatur).
 Model proteksi CIDSeeks:
 - privacy delay Δ dan varian pesan harus menurunkan keberhasilan fingerprinting dan linkage.
+- residual leakage yang tetap lolos tidak berhenti di privacy layer: trust engine harus memunculkan `FIBD`, `SplitFail`, `CoalCorr`, dan `P_apmfa` sebagai evidence attribution.
 - fallback klasifikasi saat bukti lemah:
   - `pmfa_fallback_mode`: `assume_challenge | prior`
   - `pmfa_request_prior`: prior REQUEST saat mode `prior`
@@ -167,6 +187,9 @@ Minimal wajib:
 3) No Privacy Guard (Δ=0 dan variants=1)
 4) No Authentication (auth score selalu “pass” atau dimatikan)
 5) “Flat Trust” baseline (hanya basic trust, advanced/final dimatikan)
+6) No FIBD
+7) No SplitFail
+8) No CoalCorr
 
 Tujuan: reviewer bisa lihat kontribusi tiap komponen (ablation clarity).
 
@@ -180,6 +203,12 @@ Tujuan: reviewer bisa lihat kontribusi tiap komponen (ablation clarity).
 - Trust separation:
   - distribusi trust honest vs malicious
   - time-to-detect (ticks sampai malicious turun di bawah τ)
+- Attribution evidence:
+  - `fibd_mean`
+  - `split_fail_mean`
+  - `coalcorr_mean`
+  - `apmfa_penalty_mean`
+  - `final_split_fail_penalty_mean`
 - Attack impact:
   - delta FP/FN vs baseline
   - fraction malicious yang lolos threshold τ
@@ -199,14 +228,21 @@ Semantic guardrail:
   - wall-clock per run
   - peak memory (opsional, tapi bagus untuk paper)
 
-### 6.3 Privacy proxy metrics (praktis untuk simulasi)
+### 6.3 Privacy / attacker-side metrics
 - fingerprint_success_rate:
   - peluang attacker menebak “challenge vs normal” lebih baik dari random
   - atau linkage success antar varian alarm bila delay/varian dimatikan
+- Summary run-level menyimpan metrik attacker-side berikut per strategy: `pmfa_success_rate_*` (closed-world accuracy), `pmfa_auc_*` (closed-world ROC AUC), `pmfa_open_adv_*` (open-world attacker advantage), `pmfa_drift_auc_*` (drift ROC AUC), dan `pmfa_best_model_*`.
+- Artifact attacker-side ditulis ke `results/<suite>/<run_id>/eval3_pmfa/` sebagai dataset CSV/JSONL plus hasil `closed_world.json`, `open_world.json`, dan `drift.json`.
+  - Dataset `eval3_pmfa` boleh membawa metadata DMPO-X tambahan seperti
+    `alias_scope` / `alias_epoch` / `alias_epoch_rounds` dan
+    `policy_decision_*` termasuk kandidat policy terpilih (`selected_*`,
+    `candidate_count`) bila runtime menyediakan `privacy_pmfa_logs`
+    dengan jejak alias/policy yang cukup.
 
 Konvensi nilai non-applicable:
 - Metrik spesifik skenario (mis. collusion amplification di run non-collusion) boleh bernilai `NaN`.
-- `NaN` harus ditafsirkan sebagai *not applicable*, bukan error runtime.
+- `NaN` harus ditafsirkan sebagai *not applicable*, bukan error runtime. Ini juga berlaku untuk metrik PMFA pada run non-PMFA.
 
 ---
 
@@ -242,6 +278,7 @@ Estimasi runtime (single worker, model kalibrasi lokal 12 run tanggal **February
 Catatan:
 - Estimasi di atas adalah inferensi dari profil runtime repo saat ini; angka riil tergantung CPU, I/O, dan topologi.
 - Jika ingin mendorong `N` sangat besar (>=1000), pertimbangkan topologi sparse (degree dijaga konstan) agar biaya tidak kuadratik.
+- Untuk run panjang bertahap (mis. profil `Flagship`), jalankan `simulate.py` dengan `--resume` agar titik eksperimen (`experiment_id`) yang sudah punya artifact lengkap tidak dieksekusi ulang saat melanjutkan batch.
 
 ### 7.2 Model runtime per attack (kalibrasi lokal)
 
@@ -288,6 +325,10 @@ Tujuan: figure utama paper.
   - `experiments.yaml` (sweep terluas dan paling mahal)
 - attacks: Collusion, PMFA, Sybil, Betrayal
 - trust model: `three_level_challenge`
+- Kontrak Phase F:
+  - skenario PMFA utama harus membandingkan `privacy_strategy: dmpo_legacy` vs `dmpo_x`
+  - skenario non-PMFA memakai `dmpo_x` sebagai baseline kanonis full-stack
+  - `paper_core` harus memuat ablation attribution dengan `attribution_profile ∈ {full, no_fibd, no_split_fail, no_coalcorr}`
 
 Output: figures/
 - fig_accuracy_vs_malicious_ratio.pdf
@@ -321,6 +362,37 @@ results/<suite>/<run_id>/
 - metadata.json  (git hash, git dirty, config/lock hash, python+deps, platform, seeds, command, start/end time)
 - metrics_raw.parquet  (atau csv bila perlu)
 - summary.csv           (1 baris per seed)
+  - kolom attribution canonical minimal:
+    `fibd_mean`, `split_fail_mean`, `coalcorr_mean`, `apmfa_penalty_mean`,
+    `apmfa_penalty_mean_malicious`, `final_split_fail_penalty_mean`,
+    `attribution_signal_count_mean`
+  - kolom framing canonical minimal:
+    `evaluation_scope`, `simulator_label`, `trust_attribution_scope`,
+    `pmfa_evidence_scope`, `pmfa_model_family`, `dmpo_x_scope`
+- events.jsonl / simulation_data.db
+  - untuk observability runtime; event trust `observation`, `challenge_basic`,
+    `challenge_advanced`, `challenge_final`, dan `challenge_outcome` harus
+    membawa metadata artefak protokol:
+    `protocol_request_id/type/correlation_id` dan
+    `protocol_response_id/type/correlation_id`
+  - event trust juga harus membawa evidence attribution:
+    `fibd`, `split_fail`, `coalcorr`, `apmfa_penalty`,
+    `attribution_signal_count`, `attribution_context_bin`,
+    `attribution_family_id`, dan untuk tier final `final_split_fail_penalty`
+  - event gate alarm seperti `alarm_received` dan `alarm_ignored_low_trust`
+    harus membawa jejak keputusan trust dengan prefix `trust_gate_*`
+  - event sender-side admission `alarm_sender_gate` harus membawa jejak
+    keputusan trust di pengirim dengan prefix `sender_gate_*`
+  - payload/event yang berasal dari `dmpo_x` boleh membawa metadata alias
+    `privacy_alias_scope`, `privacy_alias_epoch`, dan
+    `privacy_alias_epoch_rounds`
+  - bila tersedia wire artifact alarm, event gate alarm juga harus membawa
+    `alarm_wire_message_id/type/correlation_id`
+  - bila receive path memakai delay handshake trust, event gate alarm juga
+    harus membawa `trust_gate_delay_ms`
+  - bila sender-side admission memakai delay handshake trust, event
+    `alarm_sender_gate` juga harus membawa `sender_gate_delay_ms`
+- eval3_pmfa/          (khusus PMFA: dataset CSV/JSONL + hasil closed/open/drift attacker evaluation)
 - figures/              (png/pdf)
 - logs/                 (optional, ringkas)
 
@@ -331,11 +403,20 @@ Identitas run:
 
 Aggregate suite:
 results/<suite>/
-- aggregate_summary.csv
+- experiments.csv          (per-run summary rows untuk batch agregasi aktif)
+- aggregate_summary.csv    (agregasi dari batch aktif)
 - stats_gate.json
+- batch_manifest.json      (provenance batch agregasi aktif: `batch_id`,
+  `aggregation_scope`, run ids, experiment ids, seed set)
 - seed_manifest.json
 - aggregate_plots/
 - README.md (cara reproduce suite ini)
+
+Catatan kontrak:
+- `experiments.csv` dan `aggregate_summary.csv` harus dipahami sebagai hasil
+  **batch aktif**, bukan union tak-terkontrol dari seluruh history suite.
+- `batch_manifest.json` adalah sumber kebenaran untuk menjelaskan run mana saja
+  yang ikut dihitung pada agregasi tersebut.
 
 Manifest (opsional untuk UI):
 results/_manifests/

@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software or its artifacts in research, please cite it."
+title: "CIDSeeks / VIBE-CIDS Evaluation-2 (SimPy) Simulation Platform"
+type: software
+version: 0.1.0
+license: MIT
+date-released: 2026-02-23
+authors:
+  - family-names: Cahyo
+    given-names: Adit
+    alias: aditcahyo
+keywords:
+  - collaborative intrusion detection
+  - trust management
+  - simpy
+  - security simulation
+  - reproducibility

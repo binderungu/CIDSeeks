@@ -34,14 +34,15 @@ class CollaborationModule:
         node_rng = getattr(node, 'rng', None)
         self.rng = node_rng if node_rng is not None else random.Random(int(getattr(node, 'id', 0) or 0))
         feature_cfg = dict(feature_config or {})
+        self.feature_cfg = feature_cfg
         
         # Inisialisasi Gossip Protocol menggunakan parameter dari config
-        gossip_fanout = feature_cfg.get('gossip_fanout', None)
-        if gossip_fanout in (None, "sqrt", "sqrtN", "sqrt_n"):
+        gossip_fanout_raw: Any = feature_cfg.get('gossip_fanout', None)
+        if gossip_fanout_raw in (None, "sqrt", "sqrtN", "sqrt_n"):
             total_nodes = int(feature_cfg.get('total_nodes', 1))
-            gossip_fanout = max(1, int(math.sqrt(max(1, total_nodes))))
+            gossip_fanout_raw = max(1, int(math.sqrt(max(1, total_nodes))))
         try:
-            gossip_fanout = int(gossip_fanout)
+            gossip_fanout = int(gossip_fanout_raw if gossip_fanout_raw is not None else 3)
         except Exception:
             gossip_fanout = 3
         gossip_max_hops = feature_cfg.get('gossip_max_hops', 5)
@@ -51,7 +52,160 @@ class CollaborationModule:
         
         self.received_alarm_ids: Set[str] = set()
 
+    @staticmethod
+    def _policy_value(policy: Any, field: str, default: Any) -> Any:
+        if hasattr(policy, field):
+            return getattr(policy, field)
+        if isinstance(policy, dict):
+            return policy.get(field, default)
+        return default
+
+    def _sample_delay(self, policy: Any) -> float:
+        min_delay = self.node.feature_config.get('min_alarm_send_delay', 0.1) if hasattr(self.node, 'feature_config') else 0.1
+        max_delay = self.node.feature_config.get('max_alarm_send_delay', 0.5) if hasattr(self.node, 'feature_config') else 0.5
+        law = str(self._policy_value(policy, 'd_t', 'uniform') or 'uniform').lower()
+        if law == 'exp_low':
+            base = max(min_delay, 0.05)
+            delay = self.rng.expovariate(1.0 / base)
+        elif law == 'exp_mid':
+            base = max((min_delay + max_delay) / 2.0, 0.05)
+            delay = self.rng.expovariate(1.0 / base)
+        elif law == 'exp_high':
+            base = max(max_delay, 0.05)
+            delay = self.rng.expovariate(1.0 / base)
+        else:
+            delay = self.rng.uniform(min_delay, max_delay)
+        return max(min_delay, min(max_delay * 2.0, float(delay)))
+
+    def _sample_trust_gate_delay_ms(self) -> float:
+        return self._sample_configured_delay_ms('trust_gate_delay_ms', 'trust_gate_delay_jitter_ms')
+
+    def _sample_sender_trust_gate_delay_ms(self) -> float:
+        return self._sample_configured_delay_ms(
+            'sender_trust_gate_delay_ms',
+            'sender_trust_gate_delay_jitter_ms',
+        )
+
+    def _sample_configured_delay_ms(self, base_key: str, jitter_key: str) -> float:
+        try:
+            base_ms = float(self.feature_cfg.get(base_key, 0.0) or 0.0)
+        except Exception:
+            base_ms = 0.0
+        try:
+            jitter_ms = float(self.feature_cfg.get(jitter_key, 0.0) or 0.0)
+        except Exception:
+            jitter_ms = 0.0
+        if jitter_ms > 0.0:
+            lower = max(0.0, base_ms - jitter_ms)
+            upper = max(lower, base_ms + jitter_ms)
+            return float(self.rng.uniform(lower, upper))
+        return max(0.0, base_ms)
+
+    @staticmethod
+    def _resolve_alarm_context_id(alarm: Dict[str, Any], fallback: Optional[str] = None) -> str:
+        if fallback:
+            return str(fallback)
+        for key in ('alarm_family_id', 'original_alarm_hash', 'message_id'):
+            value = alarm.get(key)
+            if value:
+                return str(value)
+        return str(fallback or 'alarm_context_unknown')
+
+    def _evaluate_trust_for_alarm(
+        self,
+        target_node: 'Node',
+        alarm: Dict[str, Any],
+        *,
+        fallback_alarm_set_id: Optional[str] = None,
+    ) -> tuple[float, Dict[str, Any]]:
+        previous_alarm_set_id = getattr(self.node, 'current_request_alarm_set_id', None)
+        alarm_set_id = self._resolve_alarm_context_id(alarm, fallback=fallback_alarm_set_id)
+        setattr(self.node, 'current_request_alarm_set_id', alarm_set_id)
+        try:
+            trust_score = float(self.node.evaluate_trust(target_node))
+        finally:
+            setattr(self.node, 'current_request_alarm_set_id', previous_alarm_set_id)
+        return trust_score, self._last_trust_trace(target_node.id)
+
+    def _last_trust_trace(self, target_id: int) -> Dict[str, Any]:
+        trust_manager = getattr(self.node, 'trust_manager', None)
+        getter = getattr(trust_manager, 'get_last_evaluation_trace', None)
+        if callable(getter):
+            try:
+                trace = getter(target_id)
+                if isinstance(trace, dict):
+                    return dict(trace)
+            except Exception:
+                self.logger.debug("Failed to read last trust trace", exc_info=True)
+        return {}
+
+    @staticmethod
+    def _trust_gate_details(trust_score: float, trace: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'trust_gate_score': float(trust_score),
+            'trust_gate_msg_kind': trace.get('msg_kind'),
+            'trust_gate_alarm_set_id': trace.get('alarm_set_id'),
+            'trust_gate_challenge_tier': trace.get('challenge_tier'),
+            'trust_gate_protocol_request_id': trace.get('protocol_request_id'),
+            'trust_gate_protocol_request_type': trace.get('protocol_request_type'),
+            'trust_gate_protocol_response_id': trace.get('protocol_response_id'),
+            'trust_gate_protocol_response_type': trace.get('protocol_response_type'),
+            'trust_gate_pmfa_surface_id': trace.get('pmfa_surface_id'),
+            'trust_gate_trust_before': trace.get('trust_before'),
+            'trust_gate_trust_after': trace.get('trust_after'),
+        }
+
+    @staticmethod
+    def _alarm_wire_fields(wire_message: Any) -> Dict[str, Any]:
+        if wire_message is None:
+            return {}
+        return {
+            'alarm_wire_message_id': getattr(wire_message, 'id', None),
+            'alarm_wire_message_type': getattr(wire_message, 'type', None),
+            'alarm_wire_correlation_id': getattr(wire_message, 'correlation_id', None),
+        }
+
     def spread_alarm(self, original_alarm: Dict[str, Any]):
+        return self.node.env.process(self._spread_alarm_process(original_alarm))
+
+    def _record_sender_gate_event(
+        self,
+        *,
+        target_node: 'Node',
+        alarm_context_id: str,
+        delay_ms: float,
+        trust_threshold: float,
+        trust_score: float,
+        trust_trace: Dict[str, Any],
+        admitted: bool,
+    ) -> None:
+        if not self.node.db:
+            return
+        self.node.db.store_event(
+            timestamp=self.node.env.now,
+            iteration=self.node.current_iteration,
+            node_id=self.node.id,
+            event_type='alarm_sender_gate',
+            details={
+                'alarm_context_id': alarm_context_id,
+                'sender_gate_candidate_id': target_node.id,
+                'sender_gate_delay_ms': float(delay_ms),
+                'sender_gate_threshold': float(trust_threshold),
+                'sender_gate_score': float(trust_score),
+                'sender_gate_admitted': bool(admitted),
+                'sender_gate_msg_kind': trust_trace.get('msg_kind'),
+                'sender_gate_alarm_set_id': trust_trace.get('alarm_set_id'),
+                'sender_gate_protocol_request_id': trust_trace.get('protocol_request_id'),
+                'sender_gate_protocol_request_type': trust_trace.get('protocol_request_type'),
+                'sender_gate_protocol_response_id': trust_trace.get('protocol_response_id'),
+                'sender_gate_protocol_response_type': trust_trace.get('protocol_response_type'),
+                'sender_gate_trust_before': trust_trace.get('trust_before'),
+                'sender_gate_trust_after': trust_trace.get('trust_after'),
+            },
+            related_node_id=target_node.id,
+        )
+
+    def _spread_alarm_process(self, original_alarm: Dict[str, Any]):
         """Spread alarm variations using the CIDSeeks privacy-enhanced workflow."""
 
         self.logger.debug("Using advanced privacy/spreading for 3-level-challenge method.")
@@ -60,24 +214,11 @@ class CollaborationModule:
             self.logger.error(f"Privacy module not found for Node {self.node.id}, cannot generate variations.")
             return
 
-        try:
-            alarm_variations = privacy_module.generate_alarm_variations(original_alarm)
-        except Exception as e:
-            self.logger.error(f"Error generating alarm variations: {e}")
-            return
-
-        if not alarm_variations:
-            self.logger.warning(f"No alarm variations generated for alarm {original_alarm.get('message_id')}")
-            return
-
-        original_hash = alarm_variations[0].get('original_alarm_hash', 'unknown_hash')
+        original_hash = privacy_module._calculate_alarm_hash(original_alarm)
         self.logger.info(
-            "Spreading %s variations for original alarm hash %s...",
-            len(alarm_variations),
+            "Preparing dissemination for alarm hash %s...",
             original_hash[:8],
         )
-
-        self.rng.shuffle(alarm_variations)
 
         neighbor_nodes: List['Node'] = self.node.neighbors
         valid_neighbors = [n for n in neighbor_nodes if hasattr(n, 'collaboration_module')]
@@ -85,25 +226,96 @@ class CollaborationModule:
             self.logger.warning(f"Node {self.node.id} has no valid neighbors to send alarm variations to.")
             return
 
-        self.rng.shuffle(valid_neighbors)
-
-        num_variations = len(alarm_variations)
-        num_targets = min(num_variations, len(valid_neighbors))
-        target_nodes = valid_neighbors[:num_targets]
-
-        for i in range(num_targets):
-            variation_to_send = alarm_variations[i]
-            target_node = target_nodes[i]
-
-            min_delay = self.node.feature_config.get('min_alarm_send_delay', 0.1) if hasattr(self.node, 'feature_config') else 0.1
-            max_delay = self.node.feature_config.get('max_alarm_send_delay', 0.5) if hasattr(self.node, 'feature_config') else 0.5
-            delay = self.rng.uniform(min_delay, max_delay)
-
-            self.node.env.process(
-                self._send_single_alarm_variation(variation_to_send, target_node, delay)
+        # Sender-side trust admission: only disseminate to peers above trust threshold.
+        trust_threshold = (
+            self.node.trust_config.get('trust_threshold', 0.5)
+            if hasattr(self.node, 'trust_config')
+            else 0.5
+        )
+        alarm_context_id = str(original_hash)
+        trusted_neighbors: List['Node'] = []
+        trusted_scores: List[float] = []
+        for neighbor in valid_neighbors:
+            delay_ms = self._sample_sender_trust_gate_delay_ms()
+            if delay_ms > 0.0:
+                yield self.node.env.timeout(delay_ms / 1000.0)
+            try:
+                score, trace = self._evaluate_trust_for_alarm(
+                    neighbor,
+                    original_alarm,
+                    fallback_alarm_set_id=original_hash,
+                )
+            except Exception:
+                score = 0.0
+                trace = {}
+            admitted = score >= trust_threshold
+            self._record_sender_gate_event(
+                target_node=neighbor,
+                alarm_context_id=alarm_context_id,
+                delay_ms=delay_ms,
+                trust_threshold=trust_threshold,
+                trust_score=score,
+                trust_trace=trace,
+                admitted=admitted,
             )
+            if admitted:
+                trusted_neighbors.append(neighbor)
+                trusted_scores.append(score)
+        if not trusted_neighbors:
+            self.logger.info(
+                "Node %s has no trusted neighbors above threshold %.3f for alarm dissemination.",
+                self.node.id,
+                trust_threshold,
+            )
+            return
 
-        self.logger.debug(f"Scheduled sending of {num_targets} alarm variations with random delays (advanced path).")
+        self.rng.shuffle(trusted_neighbors)
+        policy = privacy_module.select_dissemination_policy(
+            original_alarm,
+            trust_scores=trusted_scores,
+            neighbor_count=len(trusted_neighbors),
+        )
+        desired_fanout = int(self._policy_value(policy, 'f_t', self.gossip.fanout) or self.gossip.fanout)
+        num_targets = min(max(1, desired_fanout), len(trusted_neighbors))
+        target_nodes = trusted_neighbors[:num_targets]
+
+        scheduled_messages = 0
+        for i, target_node in enumerate(target_nodes):
+            include_cover = self.rng.random() < float(self._policy_value(policy, 'r_t', 0.0) or 0.0)
+            try:
+                recipient_variations = privacy_module.generate_alarm_variations(
+                    original_alarm,
+                    recipient_id=getattr(target_node, 'id', None),
+                    policy=policy,
+                    include_cover=include_cover,
+                )
+            except Exception as e:
+                self.logger.error(f"Error generating recipient-scoped variations: {e}")
+                continue
+
+            primary_variations = [v for v in recipient_variations if not v.get('is_cover')]
+            if not primary_variations:
+                self.logger.warning("No primary alarm payload generated for target node %s", target_node.id)
+                continue
+
+            chosen_variation = primary_variations[i % len(primary_variations)]
+            self.node.env.process(
+                self._send_single_alarm_variation(chosen_variation, target_node, self._sample_delay(policy))
+            )
+            scheduled_messages += 1
+
+            for cover_variation in [v for v in recipient_variations if v.get('is_cover')]:
+                self.node.env.process(
+                    self._send_single_alarm_variation(cover_variation, target_node, self._sample_delay(policy))
+                )
+                scheduled_messages += 1
+
+        self.logger.debug(
+            "Scheduled %s alarm payloads (fanout=%s, K_t=%s).",
+            scheduled_messages,
+            num_targets,
+            self._policy_value(policy, 'K_t', 1),
+        )
 
     def _send_single_alarm_variation(self, alarm_variation: Dict[str, Any], target_node: 'Node', delay: float):
          """SimPy process to send a single alarm variation after a delay."""
@@ -129,7 +341,7 @@ class CollaborationModule:
                           metric_logger.log_privacy_event({
                               'delay_ms': float(delay) * 1000.0,
                               'payload_size': payload_size,
-                              'variant_id': alarm_variation.get('variation_sequence_number'),
+                              'variant_id': alarm_variation.get('variation_sequence_number', 0),
                               'is_challenge': False,
                               'dmpo_enabled': bool(alarm_variation.get('dmpo_enabled', True)),
                               'sender_id': self.node.id,
@@ -137,6 +349,15 @@ class CollaborationModule:
                               'iteration': getattr(self.node, 'current_iteration', 0),
                               'message_id': alarm_variation.get('message_id'),
                               'alarm_hash': alarm_variation.get('original_alarm_hash'),
+                              'privacy_strategy': alarm_variation.get('privacy_strategy', 'dmpo_legacy'),
+                              'privacy_policy': alarm_variation.get('privacy_policy'),
+                              'privacy_policy_decision': alarm_variation.get('privacy_policy_decision'),
+                              'privacy_alias_scope': alarm_variation.get('privacy_alias_scope'),
+                              'privacy_alias_epoch': alarm_variation.get('privacy_alias_epoch'),
+                              'privacy_alias_epoch_rounds': alarm_variation.get('privacy_alias_epoch_rounds'),
+                              'stealth_header': alarm_variation.get('stealth_header'),
+                              'is_cover': bool(alarm_variation.get('is_cover', False)),
+                              'event_scope': 'wire',
                           })
                       except Exception:
                           self.logger.debug("Failed to log privacy event", exc_info=True)
@@ -149,9 +370,34 @@ class CollaborationModule:
                           direction='out',
                           payload_bytes=payload_bytes,
                           latency_ms=float(delay) * 1000.0,
-                          metadata={'strategy': 'advanced'},
+                          metadata={
+                              'strategy': 'advanced',
+                              'privacy_strategy': alarm_variation.get('privacy_strategy', 'dmpo_legacy'),
+                              'privacy_policy': alarm_variation.get('privacy_policy'),
+                              'is_cover': bool(alarm_variation.get('is_cover', False)),
+                          },
                       )
-                      target_collab_module.receive_alarm(alarm_variation, self.node)
+                      wire_message = None
+                      send_alarm_message = getattr(self.node, 'send_alarm_message', None)
+                      if callable(send_alarm_message):
+                          try:
+                              wire_message = send_alarm_message(target_node, alarm_variation)
+                          except Exception:
+                              self.logger.debug("Failed to emit explicit alarm wire message", exc_info=True)
+                      delivered_alarm = dict(getattr(wire_message, 'data', {}) or alarm_variation)
+                      receive_alarm_process = getattr(target_collab_module, 'receive_alarm_process', None)
+                      if callable(receive_alarm_process):
+                          try:
+                              yield self.node.env.process(
+                                  receive_alarm_process(delivered_alarm, self.node, wire_message=wire_message)
+                              )
+                          except TypeError:
+                              yield self.node.env.process(receive_alarm_process(delivered_alarm, self.node))
+                      else:
+                          try:
+                              target_collab_module.receive_alarm(delivered_alarm, self.node, wire_message=wire_message)
+                          except TypeError:
+                              target_collab_module.receive_alarm(delivered_alarm, self.node)
                       self.logger.info(f"Sent variation {alarm_variation.get('variation_sequence_number')} to Node {target_node.id}.")
                  else:
                       self.logger.error(f"Target Node {target_node.id} missing collaboration module during delayed send.")
@@ -174,7 +420,19 @@ class CollaborationModule:
              import traceback
              self.logger.error(traceback.format_exc())
 
-    def receive_alarm(self, alarm: Dict[str, Any], sender: 'Node'):
+    def receive_alarm_process(self, alarm: Dict[str, Any], sender: 'Node', wire_message: Any = None):
+        delay_ms = self._sample_trust_gate_delay_ms()
+        if delay_ms > 0.0:
+            yield self.node.env.timeout(delay_ms / 1000.0)
+        self.receive_alarm(alarm, sender, wire_message=wire_message, trust_gate_delay_ms=delay_ms)
+
+    def receive_alarm(
+        self,
+        alarm: Dict[str, Any],
+        sender: 'Node',
+        wire_message: Any = None,
+        trust_gate_delay_ms: float = 0.0,
+    ):
         """Receive and process alarm from another node, potentially forwarding via gossip."""
         # Pastikan ada message_id untuk tracking gossip & logging
         alarm_id = alarm.get('message_id') 
@@ -197,7 +455,11 @@ class CollaborationModule:
                     iteration=self.node.current_iteration,
                     node_id=self.node.id,
                     event_type='alarm_ignored_duplicate',
-                    details={'original_alarm_id': alarm_id},
+                    details={
+                        'original_alarm_id': alarm_id,
+                        'trust_gate_delay_ms': float(trust_gate_delay_ms),
+                        **self._alarm_wire_fields(wire_message),
+                    },
                     related_node_id=sender.id
                 )
             return
@@ -218,13 +480,17 @@ class CollaborationModule:
                         iteration=self.node.current_iteration,
                         node_id=self.node.id,
                         event_type='alarm_ignored_quarantine',
-                        details={'alarm_id': alarm_id},
+                        details={
+                            'alarm_id': alarm_id,
+                            'trust_gate_delay_ms': float(trust_gate_delay_ms),
+                            **self._alarm_wire_fields(wire_message),
+                        },
                         related_node_id=sender.id
                     )
                 return
 
             # Evaluasi trust sender
-            trust_score = self.node.evaluate_trust(sender)
+            trust_score, trust_trace = self._evaluate_trust_for_alarm(sender, alarm)
             # Ambil threshold dari trust_config node; fallback aman jika tidak tersedia.
             trust_threshold = self.node.trust_config.get('trust_threshold', 0.5) if hasattr(self.node, 'trust_config') else 0.5
 
@@ -243,7 +509,13 @@ class CollaborationModule:
                         iteration=self.node.current_iteration,
                         node_id=self.node.id,
                         event_type='alarm_ignored_low_trust',
-                        details={'alarm_id': alarm_id, 'sender_trust': trust_score},
+                        details={
+                            'alarm_id': alarm_id,
+                            'sender_trust': trust_score,
+                            'trust_gate_delay_ms': float(trust_gate_delay_ms),
+                            **self._trust_gate_details(trust_score, trust_trace),
+                            **self._alarm_wire_fields(wire_message),
+                        },
                         related_node_id=sender.id
                     )
                 return
@@ -272,12 +544,16 @@ class CollaborationModule:
 
             # Simpan event alarm diterima ke DB (menggunakan metode store_event baru)
             if self.node.db:
+                event_details = dict(alarm)
+                event_details['trust_gate_delay_ms'] = float(trust_gate_delay_ms)
+                event_details.update(self._trust_gate_details(trust_score, trust_trace))
+                event_details.update(self._alarm_wire_fields(wire_message))
                 self.node.db.store_event(
                     timestamp=self.node.env.now,
                     iteration=self.node.current_iteration,
                     node_id=self.node.id, # Node yang menerima
                     event_type='alarm_received',
-                    details=alarm, # Simpan seluruh data alarm
+                    details=event_details,
                     related_node_id=sender.id # Node pengirim
                 )
 
@@ -299,7 +575,12 @@ class CollaborationModule:
                          iteration=self.node.current_iteration,
                          node_id=self.node.id,
                          event_type='gossip_stopped_max_hops',
-                         details={'alarm_id': alarm_id, 'hops': current_hops},
+                         details={
+                             'alarm_id': alarm_id,
+                             'hops': current_hops,
+                             'trust_gate_delay_ms': float(trust_gate_delay_ms),
+                             **self._alarm_wire_fields(wire_message),
+                         },
                          related_node_id=sender.id
                      )
 

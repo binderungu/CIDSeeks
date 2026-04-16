@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 import pandas as pd
-import yaml
+import yaml  # type: ignore[import-untyped]
 import matplotlib
 
 matplotlib.use('Agg')
@@ -314,17 +314,56 @@ def _apply_variant(
         feature_cfg["max_alarm_send_delay"] = float(variant["max_alarm_send_delay"])
     if "variants_per_alarm" in variant:
         feature_cfg["variants_per_alarm"] = int(variant["variants_per_alarm"])
+    if "privacy_strategy" in variant:
+        strategy = str(variant["privacy_strategy"]).strip().lower()
+        if strategy not in {"dmpo_legacy", "dmpo_x"}:
+            raise ValueError(f"Unsupported privacy_strategy variant: {variant['privacy_strategy']}")
+        feature_cfg["privacy_strategy"] = strategy
+        privacy_cfg = _ensure_nested(feature_cfg, ["privacy"])
+        privacy_cfg["strategy"] = strategy
+        controller_cfg = _ensure_nested(feature_cfg, ["privacy", "controller"])
+        controller_cfg["enabled"] = strategy == "dmpo_x"
     if "privacy_prefix_bits" in variant:
         feature_cfg["privacy_prefix_bits"] = int(variant["privacy_prefix_bits"])
     if "privacy_k_anonymity" in variant:
         feature_cfg["privacy_k_anonymity"] = int(variant["privacy_k_anonymity"])
     if "dmpo_pmfa_guard" in variant:
         feature_cfg["dmpo_pmfa_guard"] = bool(variant["dmpo_pmfa_guard"])
+    if "privacy_alias_epoch_rounds" in variant:
+        privacy_cfg = _ensure_nested(feature_cfg, ["privacy"])
+        privacy_cfg["alias_epoch_rounds"] = int(variant["privacy_alias_epoch_rounds"])
 
-    if "fraction_sybils" not in variant and scenario.get("fraction_sybils") is not None:
-        attack_cfg["sybil_ratio"] = float(scenario.get("fraction_sybils"))
-    if "malicious_ratio" not in variant and scenario.get("malicious_ratio") is not None:
-        sim_cfg["malicious_ratio"] = float(scenario.get("malicious_ratio"))
+    if "attribution_profile" in variant:
+        profile = str(variant["attribution_profile"]).strip().lower()
+        ablation_cfg = _ensure_nested(feature_cfg, ["ablations"])
+        profiles = {
+            "full": {"fibd": True, "split_fail": True, "coalcorr": True},
+            "no_fibd": {"fibd": False, "split_fail": True, "coalcorr": True},
+            "no_split_fail": {"fibd": True, "split_fail": False, "coalcorr": True},
+            "no_coalcorr": {"fibd": True, "split_fail": True, "coalcorr": False},
+        }
+        if profile not in profiles:
+            raise ValueError(f"Unsupported attribution_profile variant: {variant['attribution_profile']}")
+        ablation_cfg.update(profiles[profile])
+    if "ablation_fibd" in variant:
+        ablation_cfg = _ensure_nested(feature_cfg, ["ablations"])
+        ablation_cfg["fibd"] = bool(variant["ablation_fibd"])
+    if "ablation_split_fail" in variant:
+        ablation_cfg = _ensure_nested(feature_cfg, ["ablations"])
+        ablation_cfg["split_fail"] = bool(variant["ablation_split_fail"])
+    if "ablation_coalcorr" in variant:
+        ablation_cfg = _ensure_nested(feature_cfg, ["ablations"])
+        ablation_cfg["coalcorr"] = bool(variant["ablation_coalcorr"])
+    if "final_split_fail_weight" in variant:
+        attribution_cfg = _ensure_nested(feature_cfg, ["attribution"])
+        attribution_cfg["final_split_fail_weight"] = float(variant["final_split_fail_weight"])
+
+    scenario_fraction_sybils = scenario.get("fraction_sybils")
+    if "fraction_sybils" not in variant and scenario_fraction_sybils is not None:
+        attack_cfg["sybil_ratio"] = float(scenario_fraction_sybils)
+    scenario_malicious_ratio = scenario.get("malicious_ratio")
+    if "malicious_ratio" not in variant and scenario_malicious_ratio is not None:
+        sim_cfg["malicious_ratio"] = float(scenario_malicious_ratio)
 
     eval_cfg["scenario_notes"] = scenario.get("notes")
 
@@ -372,6 +411,83 @@ def _make_variant_label(scenario_id: str, variant: Dict[str, Any], trust_method:
 
 def _suite_output_root(suite: str) -> Path:
     return Path("results") / suite
+
+
+def _load_resumable_run_summary(
+    run_dir: Path,
+    *,
+    expected_experiment_id: str,
+) -> Dict[str, Any]:
+    summary_path = run_dir / "summary.csv"
+    metadata_path = run_dir / "metadata.json"
+
+    missing = [path.name for path in (summary_path, metadata_path) if not path.exists()]
+    if missing:
+        raise FileExistsError(
+            f"Incomplete run artifact at {run_dir}: missing {', '.join(missing)}. "
+            "Refusing --resume to avoid mixing partial results."
+        )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict):
+        raise ValueError(f"Invalid metadata.json payload in {run_dir}")
+    meta_experiment_id = str(metadata.get("experiment_id") or "")
+    if meta_experiment_id and meta_experiment_id != expected_experiment_id:
+        raise ValueError(
+            f"Resume artifact mismatch at {run_dir}: "
+            f"metadata experiment_id={meta_experiment_id} expected={expected_experiment_id}"
+        )
+    meta_run_id = str(metadata.get("run_id") or "")
+    if meta_run_id and meta_run_id != run_dir.name:
+        raise ValueError(
+            f"Resume artifact mismatch at {run_dir}: "
+            f"metadata run_id={meta_run_id} does not match folder name"
+        )
+
+    summary_df = pd.read_csv(summary_path)
+    if summary_df.empty:
+        raise ValueError(f"Empty summary.csv in {run_dir}")
+    summary_row = summary_df.iloc[0].to_dict()
+    summary_run_id = summary_row.get("run_id")
+    if summary_run_id and str(summary_run_id) != run_dir.name:
+        raise ValueError(
+            f"Resume artifact mismatch at {run_dir}: "
+            f"summary run_id={summary_run_id} does not match folder name"
+        )
+    return summary_row
+
+
+def _find_resumable_run(
+    output_root: Path,
+    *,
+    experiment_id: str,
+) -> Optional[Tuple[Dict[str, Any], str]]:
+    pattern = f"{experiment_id}__*"
+    candidates = [path for path in output_root.glob(pattern) if path.is_dir()]
+    if not candidates:
+        return None
+
+    # Prefer the newest artifact when multiple reruns exist for the same experiment_id.
+    candidates.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    last_error: Optional[Exception] = None
+    for run_dir in candidates:
+        try:
+            summary_row = _load_resumable_run_summary(
+                run_dir,
+                expected_experiment_id=experiment_id,
+            )
+            return summary_row, str(run_dir)
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise FileExistsError(
+            f"Found existing run directories for experiment_id={experiment_id}, "
+            "but none are resumable (artifact incomplete or inconsistent). "
+            f"Last error: {last_error}"
+        ) from last_error
+    return None
 
 
 def _make_batch_uid() -> str:
@@ -584,11 +700,23 @@ def _generate_suite_plots(summary_df: pd.DataFrame, output_root: Path) -> None:
     else:
         _save_fallback_plot(plot_dir / "fig_trust_separation.pdf", "Trust Separation")
 
-    # PMFA resistance
-    if 'pmfa_success_rate_with_ver' in summary_df.columns and 'pmfa_success_rate_no_ver' in summary_df.columns:
+    # PMFA resistance (new schema + legacy fallback)
+    no_ver_col = None
+    with_ver_col = None
+    if 'pmfa_success_rate_baseline_no_privacy' in summary_df.columns:
+        no_ver_col = 'pmfa_success_rate_baseline_no_privacy'
+    elif 'pmfa_success_rate_no_ver' in summary_df.columns:
+        no_ver_col = 'pmfa_success_rate_no_ver'
+
+    if 'pmfa_success_rate_legacy_dmpo' in summary_df.columns:
+        with_ver_col = 'pmfa_success_rate_legacy_dmpo'
+    elif 'pmfa_success_rate_with_ver' in summary_df.columns:
+        with_ver_col = 'pmfa_success_rate_with_ver'
+
+    if no_ver_col and with_ver_col:
         means = [
-            summary_df['pmfa_success_rate_no_ver'].mean(),
-            summary_df['pmfa_success_rate_with_ver'].mean(),
+            summary_df[no_ver_col].mean(),
+            summary_df[with_ver_col].mean(),
         ]
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.bar(['No Verification', 'With Verification'], means, color=['tab:red', 'tab:green'])
@@ -609,6 +737,7 @@ def run_scenarios(
     verbose: bool = False,
     overwrite: bool = False,
     manifest_keep_last: Optional[int] = None,
+    resume: bool = False,
 ) -> None:
     _validate_reproducibility_requirements(config, suite)
     base_config_path = Path(config.get("base_config", "config.yaml"))
@@ -638,6 +767,7 @@ def run_scenarios(
     configs_dir.mkdir(parents=True, exist_ok=True)
 
     seed_for_stats = int(seed_plan[0]["seed"]) if seed_plan else int(config.get("seed_start", 0))
+    batch_uid = _make_batch_uid()
     agg = ExperimentAggregator(
         output_dir=output_root,
         bootstrap_samples=int(config.get("bootstrap_samples", 10000)),
@@ -645,12 +775,13 @@ def run_scenarios(
         alpha_thresholds=config.get("alpha_thresholds"),
         seed=seed_for_stats,
         gate_config=config.get("stats_gate"),
+        batch_id=batch_uid,
+        aggregation_scope="current_batch_records_only",
     )
 
     scenarios = config.get("scenarios", [])
     if not scenarios:
         raise ValueError("Configuration must include at least one scenario entry")
-    batch_uid = _make_batch_uid()
 
     for scenario in scenarios:
         scenario_id = scenario.get("scenario_id")
@@ -670,6 +801,21 @@ def run_scenarios(
                     runs_per_variant,
                 )
                 experiment_id = f"{scenario_id}_v{variant_index:02d}_r{run_index:02d}_seed{seed}"
+
+                if resume:
+                    resumed = _find_resumable_run(output_root, experiment_id=experiment_id)
+                    if resumed is not None:
+                        resumed_summary_row, resumed_run_dir = resumed
+                        LOGGER.info(
+                            "Resuming existing run scenario=%s variant=%s seed=%s from %s",
+                            scenario_id,
+                            variant_index,
+                            seed,
+                            resumed_run_dir,
+                        )
+                        agg.add_run(resumed_summary_row, resumed_run_dir)
+                        continue
+
                 run_uid = f"{batch_uid}_v{variant_index:02d}_r{run_index:02d}_seed{seed}"
                 run_id = f"{experiment_id}__{run_uid}"
 
@@ -701,8 +847,10 @@ def run_scenarios(
                 results = engine.run(iterations=engine.total_iterations)
 
                 run_summary = engine.last_run_summary or {}
-                summary_row = run_summary.get('summary')
-                run_dir = run_summary.get('output_dir')
+                raw_summary_row = run_summary.get('summary')
+                summary_row: Optional[Dict[str, Any]] = raw_summary_row if isinstance(raw_summary_row, dict) else None
+                raw_run_dir = run_summary.get('output_dir')
+                run_dir: Optional[str] = str(raw_run_dir) if raw_run_dir is not None else None
 
                 if summary_row is None or run_dir is None:
                     # Fallback: load summary.csv directly from run directory
@@ -711,12 +859,16 @@ def run_scenarios(
                         summary_path = default_dir / 'summary.csv'
                         if not summary_path.exists():
                             summary_path = next(default_dir.rglob('summary.csv'))
-                        summary_row = pd.read_csv(summary_path).iloc[0].to_dict()
+                        loaded_summary = pd.read_csv(summary_path).iloc[0].to_dict()
+                        summary_row = dict(loaded_summary)
                         run_dir = str(summary_path.parent)
                     except Exception:
                         LOGGER.error("Unable to retrieve summary for run %s", run_id)
                         continue
 
+                if summary_row is None or run_dir is None:
+                    LOGGER.error("Run %s finished without resumable summary artifacts", run_id)
+                    continue
                 agg.add_run(summary_row, run_dir)
 
     agg.finalize()
@@ -753,7 +905,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Retention policy for run manifests (keep latest N entries)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Reuse completed runs for matching deterministic experiment_id "
+            "(skip execution and aggregate existing summary.csv)"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.resume and args.overwrite:
+        parser.error("--resume cannot be combined with --overwrite")
+    return args
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -769,6 +932,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         verbose=args.verbose,
         overwrite=args.overwrite,
         manifest_keep_last=args.manifest_keep_last,
+        resume=args.resume,
     )
 
 

@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3.12
+
+  - repo: local
+    hooks:
+      - id: cidseeks-lint-critical
+        name: CIDSeeks lint (critical profile)
+        entry: make lint
+        language: system
+        pass_filenames: false
+
+      - id: cidseeks-typecheck-staged
+        name: CIDSeeks typecheck (staged profile)
+        entry: make typecheck-staged
+        language: system
+        pass_filenames: false

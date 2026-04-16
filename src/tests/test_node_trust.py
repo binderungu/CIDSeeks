@@ -3,7 +3,9 @@ import simpy
 from unittest.mock import patch
 
 from simulation.core.node import Node
+from simulation.core.message import TrustRequest
 from simulation.modules.authentication import AuthenticationModule
+from simulation.modules.trust.observation import Observation
 from simulation.modules.trust import TrustManager, TrustCalculator
 
 # Setup fixture jika diperlukan (misal, mock database, env)
@@ -58,6 +60,59 @@ def test_node_evaluate_trust_delegation(normal_node, malicious_node):
     ) as mock_evaluate:
         normal_node.evaluate_trust(malicious_node)
         mock_evaluate.assert_called_once_with(malicious_node)
+
+def test_node_send_protocol_message_records_request_and_response(normal_node, malicious_node):
+    """Trust protocol messages must traverse node inbox/outbox, not bypass the node."""
+    observation = Observation(
+        round_id=3,
+        src_id=normal_node.id,
+        dst_id=malicious_node.id,
+        msg_kind="REQUEST",
+        alarm_set_id="req_1_3",
+        flags={"pmfa_surface_id": "surface-1"},
+    )
+    request = TrustRequest(
+        source_node=str(normal_node.id),
+        target_node=str(malicious_node.id),
+        alarm_set_id=observation.alarm_set_id,
+        data={"challenge_tier": None},
+        message_id="request_1_2_3",
+        iteration=observation.round_id,
+        correlation_id=observation.alarm_set_id,
+    )
+
+    with patch.object(
+        malicious_node.behavior_policy,
+        "respond",
+        return_value=(0.25, {"pmfa_response": "malicious"}),
+    ) as mock_respond:
+        response = normal_node.send_protocol_message(malicious_node, request, observation)
+
+    assert response is not None
+    assert response.type == "request_response"
+    assert response.data["response_value"] == 0.25
+    assert response.data["flags"]["pmfa_response"] == "malicious"
+    assert response.correlation_id == request.id
+    assert normal_node.protocol_outbox[-1] is request
+    assert normal_node.protocol_inbox[-1] is response
+    assert malicious_node.protocol_inbox[-1] is request
+    assert malicious_node.protocol_outbox[-1] is response
+    mock_respond.assert_called_once_with(observation, source_is_malicious=normal_node.is_malicious)
+
+def test_node_send_alarm_message_records_wire_artifact(normal_node, malicious_node):
+    payload = {
+        "message_id": "alarm-node-1",
+        "original_alarm_hash": "family-node-1",
+        "classification_text": "suspicious_activity",
+    }
+
+    wire_message = normal_node.send_alarm_message(malicious_node, payload)
+
+    assert wire_message.type == "alarm"
+    assert wire_message.id == "alarm-node-1"
+    assert wire_message.correlation_id == "family-node-1"
+    assert normal_node.protocol_outbox[-1] is wire_message
+    assert malicious_node.protocol_inbox[-1] is wire_message
 
 # --- Test Fungsi Node yang Tersisa --- 
 def test_calculate_biometric_deterministic(normal_node, malicious_node):

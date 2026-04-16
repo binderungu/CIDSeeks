@@ -7,8 +7,11 @@ from collections import defaultdict
 from unittest.mock import MagicMock  # Gunakan MagicMock dari unittest.mock
 
 # Modul yang diuji
+from simulation.core.message import TrustResponse
+from simulation.modules.privacy.module import PrivacyModule
 from simulation.modules.trust.manager import TrustManager
 from simulation.modules.trust.calculator import TrustCalculator
+from simulation.utils.perf import metric_logger
 
 # Kelas yang perlu di-mock
 from simulation.core.node import Node
@@ -64,6 +67,10 @@ def evaluating_node(test_env, mock_db, mock_calculator): # Menggunakan mock calc
         "min_alarm_send_delay": 0.1,
         "max_alarm_send_delay": 0.5,
         "privacy_salt": "cidseeks-test",
+        "attribution": {
+            "weights_apmfa": {"fibd": 0.34, "split_fail": 0.33, "coalcorr": 0.33},
+            "final_split_fail_weight": 0.25,
+        },
     }
     node.current_request_alarm_set_id = "req_test"
     node.trust_scores = {2: 0.5} # Skor awal untuk target node 2
@@ -192,6 +199,183 @@ def test_evaluate_authentication_failure(trust_manager, evaluating_node, target_
     # Verifikasi skor disimpan
     assert evaluating_node.trust_scores[target_node.id] == 0.3
     mock_db.store_trust_score.assert_called()
+
+
+def test_evaluate_records_pmfa_privacy_event(trust_manager, target_node):
+    metric_logger.reset()
+    try:
+        trust_manager.evaluate(target_node)
+        snapshot = metric_logger.snapshot()
+        assert len(snapshot["privacy_pmfa_logs"]) == 1
+        event = snapshot["privacy_pmfa_logs"][0]
+        assert event["event_scope"] == "internal"
+        assert event["privacy_strategy"] == "dmpo_legacy"
+        assert event["is_challenge"] in {True, False}
+        assert isinstance(event["privacy_policy"], dict)
+    finally:
+        metric_logger.reset()
+
+
+def test_evaluate_records_dmpox_alias_and_policy_trace_on_internal_privacy_event(
+    trust_manager,
+    evaluating_node,
+    target_node,
+):
+    evaluating_node.feature_config.update(
+        {
+            "privacy_strategy": "dmpo_x",
+            "total_nodes": 8,
+            "privacy": {
+                "strategy": "dmpo_x",
+                "alias_epoch_rounds": 4,
+                "controller": {
+                    "enabled": True,
+                    "candidate_policies": [
+                        {"policy_id": "px", "K_t": 4, "f_t": 2, "ell_t": "medium", "d_t": "exp_mid", "r_t": 0.2},
+                    ],
+                },
+            },
+        }
+    )
+    evaluating_node.privacy_module = PrivacyModule(evaluating_node)
+    evaluating_node.neighbors = [target_node]
+    metric_logger.reset()
+    try:
+        trust_manager.evaluate(target_node)
+        snapshot = metric_logger.snapshot()
+        assert len(snapshot["privacy_pmfa_logs"]) == 1
+        event = snapshot["privacy_pmfa_logs"][0]
+        assert event["privacy_strategy"] == "dmpo_x"
+        assert event["privacy_alias_scope"] == "recipient_epoch"
+        assert event["privacy_alias_epoch"] == 1
+        assert event["privacy_alias_epoch_rounds"] == 4
+        assert event["privacy_policy_decision"]["selected_policy_id"] == event["privacy_policy"]["policy_id"]
+        assert event["privacy_policy_decision"]["selection_mode"] == "objective_minimization"
+    finally:
+        metric_logger.reset()
+
+
+def test_evaluate_records_protocol_metadata_on_events(trust_manager, evaluating_node, target_node, mock_db):
+    evaluating_node.send_protocol_message.return_value = TrustResponse(
+        source_node=str(target_node.id),
+        target_node=str(evaluating_node.id),
+        msg_kind="CHALLENGE",
+        response_value=0.9,
+        flags={
+            "challenge_proof_valid": True,
+            "challenge_proof_type": "final_attestation_proof",
+        },
+        data={"alarm_set_id": "chal_1_2_5_final", "challenge_tier": "final"},
+        message_id="response_2_1_5",
+        iteration=evaluating_node.current_iteration,
+        correlation_id="challenge_1_2_5",
+    )
+
+    trust_manager.evaluate(target_node)
+
+    evaluating_node.send_protocol_message.assert_called_once()
+    observation_events = [
+        call.kwargs
+        for call in mock_db.store_event.call_args_list
+        if call.kwargs.get("event_type") == "observation"
+    ]
+    assert len(observation_events) == 1
+    observation_details = observation_events[0]["details"]
+    assert observation_details["protocol_request_id"] == "challenge_1_2_5"
+    assert observation_details["protocol_request_type"] == "challenge"
+    assert observation_details["protocol_request_correlation_id"] == "chal_1_2_5_final"
+    assert observation_details["protocol_response_id"] == "response_2_1_5"
+    assert observation_details["protocol_response_type"] == "challenge_response"
+    assert observation_details["protocol_response_correlation_id"] == "challenge_1_2_5"
+
+    outcome_events = [
+        call.kwargs
+        for call in mock_db.store_event.call_args_list
+        if call.kwargs.get("event_type") == "challenge_outcome"
+    ]
+    assert len(outcome_events) == 1
+    outcome_details = outcome_events[0]["details"]
+    assert outcome_details["protocol_request_id"] == "challenge_1_2_5"
+    assert outcome_details["protocol_response_id"] == "response_2_1_5"
+    trace = trust_manager.get_last_evaluation_trace(target_node.id)
+    assert trace["alarm_set_id"] == "chal_1_2_5_final"
+    assert trace["protocol_request_id"] == "challenge_1_2_5"
+    assert trace["protocol_response_id"] == "response_2_1_5"
+
+
+def test_evaluate_emits_explicit_attribution_penalty_and_final_split_fail_penalty(
+    trust_manager,
+    evaluating_node,
+    malicious_target_node,
+    mock_calculator,
+    mock_db,
+):
+    malicious_target_node.behavior_policy.respond.return_value = (
+        0.2,
+        {
+            "challenge_proof_valid": False,
+            "challenge_proof_type": "final_attestation_bundle",
+            "pmfa_predicted_kind": "REQUEST",
+            "pmfa_response": "malicious",
+        },
+    )
+
+    trust_manager.evaluate(malicious_target_node)
+
+    advanced_terms = mock_calculator.calculate_advanced_challenge_score.call_args.kwargs["advanced_terms"]
+    assert advanced_terms["split_fail"] == pytest.approx(1.0)
+    assert advanced_terms["apmfa_penalty"] > 0.0
+
+    final_kwargs = mock_calculator.calculate_final_challenge_score.call_args.kwargs
+    assert final_kwargs["attribution_penalty"] > 0.0
+
+    outcome_events = [
+        call.kwargs
+        for call in mock_db.store_event.call_args_list
+        if call.kwargs.get("event_type") == "challenge_outcome"
+    ]
+    assert len(outcome_events) == 1
+    details = outcome_events[0]["details"]
+    assert details["apmfa_penalty"] > 0.0
+    assert details["final_split_fail_penalty"] > 0.0
+    assert details["attribution_signal_count"] == 3
+
+    trace = trust_manager.get_last_evaluation_trace(malicious_target_node.id)
+    assert trace["apmfa_penalty"] > 0.0
+    assert trace["final_split_fail_penalty"] > 0.0
+
+
+def test_evaluate_respects_attribution_ablations(
+    evaluating_node,
+    malicious_target_node,
+    mock_calculator,
+):
+    evaluating_node.feature_config["ablations"] = {
+        "fibd": False,
+        "split_fail": False,
+        "coalcorr": False,
+    }
+    trust_manager = TrustManager(node=evaluating_node, calculator=mock_calculator)
+    malicious_target_node.behavior_policy.respond.return_value = (
+        0.2,
+        {
+            "challenge_proof_valid": False,
+            "challenge_proof_type": "final_attestation_bundle",
+            "pmfa_predicted_kind": "REQUEST",
+            "pmfa_response": "malicious",
+        },
+    )
+
+    trust_manager.evaluate(malicious_target_node)
+
+    advanced_terms = mock_calculator.calculate_advanced_challenge_score.call_args.kwargs["advanced_terms"]
+    assert advanced_terms["fibd"] == 0.0
+    assert advanced_terms["split_fail"] == 0.0
+    assert advanced_terms["coalcorr"] == 0.0
+    assert advanced_terms["apmfa_penalty"] == 0.0
+
+    final_kwargs = mock_calculator.calculate_final_challenge_score.call_args.kwargs
+    assert final_kwargs["attribution_penalty"] == 0.0
 
 # TODO: Tambahkan test case lain:
 # - Test helper methods (_get_target_reputation, _get_target_contribution, _get_target_penalty) 

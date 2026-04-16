@@ -7,7 +7,8 @@ import webbrowser
 import subprocess
 import sys
 from pathlib import Path
-import yaml
+from typing import Optional
+import yaml  # type: ignore[import-untyped]
 
 import networkx as nx
 from .webview_adapter import create_viewer, get_viewer_capabilities, PYWEBVIEW_AVAILABLE
@@ -284,7 +285,7 @@ class GraphAnalysisTab(ctk.CTkFrame):
                     or trust_scores
                 )
                 
-                edge_data = {}
+                edge_data: dict[tuple[int, int], list[float]] = {}
                 for s in scores_to_use:
                     source = s['node_id']
                     target = s['target_node_id']
@@ -876,7 +877,11 @@ pip install pywebview
 """
             return placeholder_text
     
-    def _load_content_via_viewer(self, html_path: str = None, content: str = None):
+    def _load_content_via_viewer(
+        self,
+        html_path: Optional[str] = None,
+        content: Optional[str] = None,
+    ) -> None:
         """Load content using the viewer adapter"""
         if not self.viewer:
             self.logger.error("No viewer available")

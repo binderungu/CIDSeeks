@@ -547,6 +547,9 @@ class ExperimentSummaryTab(ttk.Frame):
                     'trust_gap_auc',
                     'pmfa_success_rate_no_ver',
                     'pmfa_success_rate_with_ver',
+                    'pmfa_success_rate_baseline_no_privacy',
+                    'pmfa_success_rate_legacy_dmpo',
+                    'pmfa_success_rate_dmpo_x',
                     'trust_threshold',
                 ]
                 for key in numeric_mean_keys:
@@ -595,6 +598,9 @@ class ExperimentSummaryTab(ttk.Frame):
                     'trust_gap_auc': 'trust_gap_auc',
                     'pmfa_success_rate_no_ver': 'pmfa_success_rate_no_ver',
                     'pmfa_success_rate_with_ver': 'pmfa_success_rate_with_ver',
+                    'pmfa_success_rate_baseline_no_privacy': 'pmfa_success_rate_baseline_no_privacy',
+                    'pmfa_success_rate_legacy_dmpo': 'pmfa_success_rate_legacy_dmpo',
+                    'pmfa_success_rate_dmpo_x': 'pmfa_success_rate_dmpo_x',
                     'FPR_h': 'FPR_h',
                     'FNR_m': 'FNR_m',
                 }
@@ -623,8 +629,15 @@ class ExperimentSummaryTab(ttk.Frame):
 
         ci_low = summary.get('TTD_CI_low') or summary.get('tti_ci_lower')
         ci_high = summary.get('TTD_CI_high') or summary.get('tti_ci_upper')
-        if self._is_finite(ci_low) and self._is_finite(ci_high):
-            summary['TTD_ci_str'] = f"{float(ci_low):.1f}–{float(ci_high):.1f}"
+        if ci_low is not None and ci_high is not None and self._is_finite(ci_low) and self._is_finite(ci_high):
+            try:
+                ci_low_num = float(ci_low)
+                ci_high_num = float(ci_high)
+            except (TypeError, ValueError):
+                ci_low_num = None
+                ci_high_num = None
+            if ci_low_num is not None and ci_high_num is not None:
+                summary['TTD_ci_str'] = f"{ci_low_num:.1f}–{ci_high_num:.1f}"
 
         tti_df: pd.DataFrame | None = None
         if isinstance(art, RunArtifacts):
@@ -679,8 +692,12 @@ class ExperimentSummaryTab(ttk.Frame):
             ("Stability τ", self._summary_value(summary, "stability_kendall_tau")),
             ("Trust Gap Final", self._summary_value(summary, "trust_gap_final", "trust_gap")),
             ("Trust Gap AUC", self._summary_value(summary, "trust_gap_auc")),
-            ("PMFA Success (No Ver)", self._summary_value(summary, "pmfa_success_rate_no_ver")),
-            ("PMFA Success (With Ver)", self._summary_value(summary, "pmfa_success_rate_with_ver")),
+            ("PMFA CW Acc (No Ver)", self._summary_value(summary, "pmfa_success_rate_baseline_no_privacy", "pmfa_success_rate_no_ver")),
+            ("PMFA CW Acc (With Ver)", self._summary_value(summary, "pmfa_success_rate_legacy_dmpo", "pmfa_success_rate_with_ver")),
+            ("PMFA CW Acc (DMPO-X)", self._summary_value(summary, "pmfa_success_rate_dmpo_x")),
+            ("PMFA Open Adv (DMPO-X)", self._summary_value(summary, "pmfa_open_adv_dmpo_x")),
+            ("PMFA Drift AUC (DMPO-X)", self._summary_value(summary, "pmfa_drift_auc_dmpo_x")),
+            ("PMFA Best Model (DMPO-X)", self._summary_value(summary, "pmfa_best_model_dmpo_x")),
         ]
 
         def fmt(val: Any) -> str:
@@ -768,13 +785,13 @@ class ExperimentSummaryTab(ttk.Frame):
             ("Reference", 'reference_method'),
             ("Method", 'method'),
             ("Wilcoxon p", 'wilcoxon_p'),
-            ("Holm-Bonferroni", 'wilcoxon_p_adj'),
+            ("Benjamini-Hochberg (FDR)", 'wilcoxon_p_adj'),
             ("Cliff’s δ", 'cliffs_delta'),
         ]
         if 'delong_p' in df.columns:
             column_defs.append(("DeLong p", 'delong_p'))
         if 'delong_p_adj' in df.columns:
-            column_defs.append(("DeLong Holm-Bonf.", 'delong_p_adj'))
+            column_defs.append(("DeLong BH (FDR)", 'delong_p_adj'))
 
         def fmt_value(val: Any, is_p: bool = False) -> str:
             try:
@@ -927,14 +944,16 @@ class ExperimentSummaryTab(ttk.Frame):
                 return
             scenario = self.scenario_var.get()
             attack = self.attack_var.get()
+            base: Path
             if self.aggregate_var.get():
                 base = self._current_run_path.parent if self._current_run_path is not None else Path(self.results_dir)
             else:
                 run = self.run_var.get()
-                base = self._current_run_path
-                if base is None:
+                base_candidate = self._current_run_path
+                if base_candidate is None:
                     base = Path(self.results_dir) / scenario / attack / run
-                base = Path(base)
+                else:
+                    base = Path(base_candidate)
             if not base.exists():
                 messagebox.showwarning("Export", "No artifacts to export")
                 return

@@ -28,15 +28,30 @@ class TrustCalculator:
         reputation: float,
         contribution: float,
         penalty: float,
-        weights: dict
+        weights: dict,
+        advanced_terms: dict | None = None,
     ) -> float:
-        """Calculate advanced challenge score: α×Tij(t-1) + β×Rj(t) + γ×Cj(t) - δ×Pj(t)"""
+        """Calculate advanced score with explicit attribution penalty.
+
+        Runtime form:
+        α×Tij(t-1) + β×Rj(t) + γ×Cj(t) - δ×(Pj(t) + P_apmfa(t))
+        """
         alpha = weights['alpha']
         beta = weights['beta']
         gamma = weights['gamma']
         delta = weights['delta']
             
-        advanced_trust = (alpha * prev_trust + beta * reputation + gamma * contribution - delta * penalty)
+        fibd = 0.0
+        split_fail = 0.0
+        coalcorr = 0.0
+        apmfa_penalty = 0.0
+        if advanced_terms:
+            fibd = max(0.0, min(1.0, float(advanced_terms.get('fibd', 0.0))))
+            split_fail = max(0.0, min(1.0, float(advanced_terms.get('split_fail', 0.0))))
+            coalcorr = max(0.0, min(1.0, float(advanced_terms.get('coalcorr', 0.0))))
+            apmfa_penalty = max(0.0, min(1.0, float(advanced_terms.get('apmfa_penalty', 0.0))))
+        attribution_penalty = apmfa_penalty or ((fibd + split_fail + coalcorr) / 3.0)
+        advanced_trust = (alpha * prev_trust + beta * reputation + gamma * contribution - delta * (penalty + attribution_penalty))
         return max(0.0, min(1.0, advanced_trust))
 
     def calculate_final_challenge_score(
@@ -44,14 +59,20 @@ class TrustCalculator:
         prev_trust: float, 
         auth_status: float, # Use float (1.0 or 0.0) for easier calculation 
         biometric_score: float, 
-        weights: dict
+        weights: dict,
+        attribution_penalty: float = 0.0,
     ) -> float:
-        """Calculate final challenge score: θ×Tij(t-1) + ϵ×Aj(t) + ζ×Bj(t)"""
+        """Calculate final score with verifier-reconstruction penalty.
+
+        Runtime form:
+        θ×Tij(t-1) + ϵ×Aj(t) + ζ×Bj(t) - P_split(t)
+        """
         theta = weights['theta']
         epsilon = weights['epsilon']
         zeta = weights['zeta']
-        
-        final_trust = (theta * prev_trust + epsilon * auth_status + zeta * biometric_score)
+
+        penalty = max(0.0, min(1.0, float(attribution_penalty)))
+        final_trust = (theta * prev_trust + epsilon * auth_status + zeta * biometric_score - penalty)
         return max(0.0, min(1.0, final_trust))
 
     def calculate_total_trust(

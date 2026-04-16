@@ -37,9 +37,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
+from eval3_metadata_attacker.dataset_builder import build_dataset_from_privacy_events
+from eval3_metadata_attacker.run_closed_world import run as run_eval3_closed_world
+from eval3_metadata_attacker.run_open_world import run as run_eval3_open_world
+from eval3_metadata_attacker.run_drift import run as run_eval3_drift
 from ..metrics.enhanced_metrics import EnhancedMetrics, compute_auprc, compute_trust_gap_auc
 from simulation.utils.rng import make_numpy_rng
 
@@ -154,6 +157,214 @@ class RunEvaluator:
         self.challenge_df = self._prepare_challenge_dataframe()
         self.message_df = self._prepare_message_dataframe()
 
+    def _empty_pmfa_stats(self) -> Dict[str, Any]:
+        return {
+            'success_baseline_no_privacy': float('nan'),
+            'success_legacy_dmpo': float('nan'),
+            'auc_baseline_no_privacy': float('nan'),
+            'auc_legacy_dmpo': float('nan'),
+            'success_dmpo_x': float('nan'),
+            'auc_dmpo_x': float('nan'),
+            'open_adv_baseline_no_privacy': float('nan'),
+            'open_adv_legacy_dmpo': float('nan'),
+            'open_adv_dmpo_x': float('nan'),
+            'drift_auc_baseline_no_privacy': float('nan'),
+            'drift_auc_legacy_dmpo': float('nan'),
+            'drift_auc_dmpo_x': float('nan'),
+            'eval3_model_baseline_no_privacy': None,
+            'eval3_model_legacy_dmpo': None,
+            'eval3_model_dmpo_x': None,
+        }
+
+    def _pmfa_eval3_seed(self) -> int:
+        try:
+            return int(getattr(self.inputs, 'seed', 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _cap_pmfa_eval3_subset(self, subset: pd.DataFrame, *, max_rows: int = 4000) -> pd.DataFrame:
+        """Bound attacker-side evaluator runtime while preserving both labels."""
+        if subset.empty or len(subset) <= max_rows or 'is_challenge' not in subset.columns:
+            return subset
+
+        working = subset.copy()
+        working['is_challenge'] = pd.to_numeric(working['is_challenge'], errors='coerce').fillna(0).astype(int)
+        positives = working[working['is_challenge'] == 1]
+        negatives = working[working['is_challenge'] == 0]
+        if positives.empty or negatives.empty:
+            return working.head(max_rows).copy()
+
+        seed = self._pmfa_eval3_seed()
+        half = max_rows // 2
+        sampled_parts = [
+            positives.sample(n=min(len(positives), half), random_state=seed),
+            negatives.sample(n=min(len(negatives), half), random_state=seed + 1),
+        ]
+        sampled = pd.concat(sampled_parts, ignore_index=False)
+        remaining = max_rows - len(sampled)
+        if remaining > 0:
+            remainder = working.drop(sampled.index, errors='ignore')
+            if not remainder.empty:
+                sampled = pd.concat(
+                    [
+                        sampled,
+                        remainder.sample(n=min(len(remainder), remaining), random_state=seed + 2),
+                    ],
+                    ignore_index=False,
+                )
+        sort_cols = [col for col in ('iteration', 'sender_id', 'receiver_id') if col in sampled.columns]
+        if sort_cols:
+            sampled = sampled.sort_values(sort_cols)
+        return sampled.reset_index(drop=True)
+
+    @staticmethod
+    def _select_best_eval3_model(closed_world: Mapping[str, Any]) -> Tuple[Optional[str], Dict[str, Any]]:
+        models = closed_world.get("models", {}) if isinstance(closed_world, Mapping) else {}
+        if not isinstance(models, Mapping) or not models:
+            return None, {}
+
+        def _score(item: Tuple[str, Any]) -> Tuple[int, float, float]:
+            _, metrics = item
+            if not isinstance(metrics, Mapping):
+                return (0, float("-inf"), float("-inf"))
+            auc = metrics.get("roc_auc", float("nan"))
+            acc = metrics.get("accuracy", float("nan"))
+            try:
+                auc_value = float(auc)
+            except (TypeError, ValueError):
+                auc_value = float("nan")
+            try:
+                acc_value = float(acc)
+            except (TypeError, ValueError):
+                acc_value = float("nan")
+            auc_is_finite = int(math.isfinite(auc_value))
+            return (
+                auc_is_finite,
+                auc_value if auc_is_finite else float("-inf"),
+                acc_value if math.isfinite(acc_value) else float("-inf"),
+            )
+
+        best_model, metrics = max(models.items(), key=_score)
+        return str(best_model), dict(metrics) if isinstance(metrics, Mapping) else {}
+
+    @staticmethod
+    def _is_finite_scalar(value: Any) -> bool:
+        try:
+            return math.isfinite(float(value))
+        except (TypeError, ValueError):
+            return False
+
+    def _active_privacy_strategy(self) -> Optional[str]:
+        config = getattr(self.inputs, "config", None)
+        if not isinstance(config, Mapping):
+            return None
+
+        feature_cfg = config.get("features", {})
+        if not isinstance(feature_cfg, Mapping):
+            feature_cfg = {}
+        privacy_cfg = feature_cfg.get("privacy", {})
+        if not isinstance(privacy_cfg, Mapping):
+            privacy_cfg = {}
+
+        strategy = str(
+            feature_cfg.get("privacy_strategy")
+            or privacy_cfg.get("strategy")
+            or ""
+        ).strip().lower()
+        aliases = {
+            "legacy_dmpo": "dmpo_legacy",
+            "none": "baseline_no_privacy",
+            "disabled": "baseline_no_privacy",
+        }
+        normalized = aliases.get(strategy, strategy)
+        return normalized or None
+
+    def _dmpox_runtime_scope(self) -> str:
+        active_privacy = self._active_privacy_strategy()
+        if active_privacy != "dmpo_x":
+            if active_privacy in {"dmpo_legacy", "baseline_no_privacy"}:
+                return "dmpo_x_not_active"
+            return "runtime_scope_unspecified"
+
+        runtime_snapshot = getattr(self.inputs, "runtime_snapshot", {})
+        if not isinstance(runtime_snapshot, Mapping):
+            runtime_snapshot = {}
+        logs = runtime_snapshot.get("privacy_pmfa_logs", [])
+        if not isinstance(logs, Sequence):
+            return "dmpo_x_configured_no_runtime_evidence"
+
+        saw_any = False
+        saw_canonical = False
+        for event in logs:
+            if not isinstance(event, Mapping):
+                continue
+            if str(event.get("privacy_strategy", "") or "").strip().lower() != "dmpo_x":
+                continue
+            saw_any = True
+            alias_scope = str(event.get("privacy_alias_scope", "") or "").strip().lower()
+            policy_decision = event.get("privacy_policy_decision")
+            if alias_scope == "recipient_epoch" and isinstance(policy_decision, Mapping) and policy_decision:
+                saw_canonical = True
+                break
+
+        if saw_canonical:
+            return "dmpo_x_runtime_eval2_canonical"
+        if saw_any:
+            return "dmpo_x_runtime_partial"
+        return "dmpo_x_configured_no_runtime_evidence"
+
+    def _trust_attribution_scope(self) -> str:
+        challenge_df = getattr(self, "challenge_df", pd.DataFrame())
+        if not isinstance(challenge_df, pd.DataFrame) or challenge_df.empty:
+            return "not_available"
+        required = ("fibd", "split_fail", "coalcorr", "apmfa_penalty")
+        for column in required:
+            if column not in challenge_df.columns:
+                return "not_available"
+            values = pd.to_numeric(challenge_df[column], errors="coerce").dropna()
+            if values.empty:
+                return "not_available"
+        return "explicit_runtime_fibd_splitfail_coalcorr"
+
+    def _build_summary_framing(self, pmfa_stats: Mapping[str, Any]) -> Dict[str, Any]:
+        attack_type = str(getattr(self.inputs, "attack_type", "") or "").strip().lower()
+        dmpo_x_scope = self._dmpox_runtime_scope()
+
+        pmfa_keys = (
+            "success_baseline_no_privacy",
+            "success_legacy_dmpo",
+            "success_dmpo_x",
+            "auc_baseline_no_privacy",
+            "auc_legacy_dmpo",
+            "auc_dmpo_x",
+            "open_adv_baseline_no_privacy",
+            "open_adv_legacy_dmpo",
+            "open_adv_dmpo_x",
+            "drift_auc_baseline_no_privacy",
+            "drift_auc_legacy_dmpo",
+            "drift_auc_dmpo_x",
+        )
+        has_pmfa_eval = any(self._is_finite_scalar(pmfa_stats.get(key)) for key in pmfa_keys)
+
+        if attack_type == "pmfa" and has_pmfa_eval:
+            pmfa_evidence_scope = "eval3_attacker_pipeline_lightweight"
+            pmfa_model_family = "lightweight_tabular_plus_proxy_temporal"
+        elif attack_type == "pmfa":
+            pmfa_evidence_scope = "pmfa_runtime_only_no_attacker_eval"
+            pmfa_model_family = None
+        else:
+            pmfa_evidence_scope = "not_applicable_non_pmfa_run"
+            pmfa_model_family = None
+
+        return {
+            "pmfa_evidence_scope": pmfa_evidence_scope,
+            "pmfa_model_family": pmfa_model_family,
+            "evaluation_scope": "eval_2_protocol_simulation",
+            "simulator_label": "simpy_hybrid_discrete_event_protocol_simulator",
+            "trust_attribution_scope": self._trust_attribution_scope(),
+            "dmpo_x_scope": dmpo_x_scope,
+        }
+
     # -- preparation -----------------------------------------------------
     def _prepare_trust_dataframe(self) -> pd.DataFrame:
         data = pd.DataFrame(self.inputs.enhanced_metrics.trust_evolution)
@@ -190,6 +401,37 @@ class RunEvaluator:
             data['latency_ms'] = np.nan
         return data
 
+    def _compute_attribution_stats(self) -> Dict[str, float]:
+        if self.challenge_df.empty:
+            return {
+                'fibd_mean': float('nan'),
+                'split_fail_mean': float('nan'),
+                'coalcorr_mean': float('nan'),
+                'apmfa_penalty_mean': float('nan'),
+                'apmfa_penalty_mean_malicious': float('nan'),
+                'final_split_fail_penalty_mean': float('nan'),
+                'attribution_signal_count_mean': float('nan'),
+            }
+
+        def _finite_mean(frame: pd.DataFrame, column: str) -> float:
+            if frame.empty or column not in frame.columns:
+                return float('nan')
+            series = pd.to_numeric(frame[column], errors='coerce').dropna()
+            if series.empty:
+                return float('nan')
+            return float(series.mean())
+
+        malicious = self.challenge_df[self.challenge_df['target_is_malicious']]
+        return {
+            'fibd_mean': _finite_mean(self.challenge_df, 'fibd'),
+            'split_fail_mean': _finite_mean(self.challenge_df, 'split_fail'),
+            'coalcorr_mean': _finite_mean(self.challenge_df, 'coalcorr'),
+            'apmfa_penalty_mean': _finite_mean(self.challenge_df, 'apmfa_penalty'),
+            'apmfa_penalty_mean_malicious': _finite_mean(malicious, 'apmfa_penalty'),
+            'final_split_fail_penalty_mean': _finite_mean(self.challenge_df, 'final_split_fail_penalty'),
+            'attribution_signal_count_mean': _finite_mean(self.challenge_df, 'attribution_signal_count'),
+        }
+
     def _round_duration_seconds(self) -> float:
         """Return simulated duration (seconds) of a single round."""
         sim_cfg = self.inputs.config.get('simulation', {}) if isinstance(self.inputs.config, Mapping) else {}
@@ -208,6 +450,7 @@ class RunEvaluator:
         overhead = self._compute_overhead_metrics()
         pmfa_stats = self._compute_pmfa_stats()
         trust_gap_series = self._compute_trust_gap_series()
+        attribution_stats = self._compute_attribution_stats()
         tti_nodes = self.inputs.enhanced_metrics.compute_tti(tau_drop=self.inputs.trust_threshold)
         auroc_thresholds = self._compute_auroc_threshold_metrics(auc_rounds)
         collusion_metrics = self._compute_collusion_amplification(trust_gap_series)
@@ -227,6 +470,7 @@ class RunEvaluator:
             stability=stability,
             overhead=overhead,
             pmfa_stats=pmfa_stats,
+            attribution_stats=attribution_stats,
             trust_gap_series=trust_gap_series,
             extra_metrics=comprehensive_metrics,
         )
@@ -706,40 +950,93 @@ class RunEvaluator:
         }
 
     def _compute_pmfa_stats(self) -> Dict[str, Any]:
+        if str(getattr(self.inputs, 'attack_type', '')).strip().lower() != 'pmfa':
+            return self._empty_pmfa_stats()
+
         logs = self.inputs.runtime_snapshot.get('privacy_pmfa_logs', [])
         if not logs:
-            return {
-                'success_no_verification': float('nan'),
-                'success_with_verification': float('nan'),
-                'auc_no_verification': float('nan'),
-                'auc_with_verification': float('nan'),
-            }
+            return self._empty_pmfa_stats()
 
         df = pd.DataFrame(logs)
+        if 'event_scope' not in df.columns:
+            df['event_scope'] = 'wire'
+        protocol_df = df[df['event_scope'].isin(['internal', 'protocol'])]
+        if not protocol_df.empty and protocol_df.get('is_challenge', pd.Series(dtype=int)).nunique() >= 2:
+            df = protocol_df
+        else:
+            df = df[df['event_scope'] == 'wire']
+        if df.empty:
+            return self._empty_pmfa_stats()
+        if 'dmpo_enabled' not in df.columns:
+            df['dmpo_enabled'] = False
+        if 'privacy_strategy' not in df.columns:
+            df['privacy_strategy'] = df['dmpo_enabled'].map({True: 'legacy_dmpo', False: 'baseline_no_privacy'})
         df['dmpo_enabled'] = df['dmpo_enabled'].astype(bool)
         df['is_challenge'] = df['is_challenge'].astype(int)
-        features = df[['delay_ms', 'payload_size']].fillna(0.0).to_numpy(dtype=float)
 
         results = {}
-        for flag, label in [(False, 'no_verification'), (True, 'with_verification')]:
-            subset = df[df['dmpo_enabled'] == flag]
+        eval3_dir = _ensure_dir(self.outputs_dir / "eval3_pmfa")
+        strategy_subsets = {
+            'baseline_no_privacy': df[df['privacy_strategy'].isin(['baseline_no_privacy']) | (~df['dmpo_enabled'])],
+            'legacy_dmpo': df[df['privacy_strategy'].isin(['dmpo_legacy', 'legacy_dmpo'])],
+            'dmpo_x': df[df['privacy_strategy'].isin(['dmpo_x'])],
+        }
+        for label, subset in strategy_subsets.items():
             if subset['is_challenge'].nunique() < 2 or subset.empty:
                 results[f'success_{label}'] = float('nan')
                 results[f'auc_{label}'] = float('nan')
+                results[f'open_adv_{label}'] = float('nan')
+                results[f'drift_auc_{label}'] = float('nan')
+                results[f'eval3_model_{label}'] = None
                 continue
             try:
-                feat = subset[['delay_ms', 'payload_size']].fillna(0.0).to_numpy(dtype=float)
-                model = LogisticRegression(max_iter=200, solver='liblinear')
-                model.fit(feat, subset['is_challenge'])
-                probs = model.predict_proba(feat)[:, 1]
-                preds = (probs >= 0.5).astype(int)
-                success = float((preds == subset['is_challenge']).mean())
-                auc = float(roc_auc_score(subset['is_challenge'], probs))
+                subset = self._cap_pmfa_eval3_subset(subset)
+                dataset_csv = eval3_dir / f"{label}_dataset.csv"
+                dataset_jsonl = eval3_dir / f"{label}_dataset.jsonl"
+                build_dataset_from_privacy_events(subset.to_dict(orient='records'), dataset_csv, dataset_jsonl)
+
+                random_state = self._pmfa_eval3_seed()
+                closed_world = run_eval3_closed_world(dataset_csv, random_state=random_state)
+                open_world = run_eval3_open_world(dataset_csv, random_state=random_state)
+                drift = run_eval3_drift(dataset_csv)
+                closed_world["dataset_rows"] = int(len(subset))
+                closed_world["random_state"] = random_state
+                open_world["dataset_rows"] = int(len(subset))
+                open_world["random_state"] = random_state
+                drift["dataset_rows"] = int(len(subset))
+
+                (eval3_dir / f"{label}_closed_world.json").write_text(
+                    json.dumps(closed_world, indent=2),
+                    encoding="utf-8",
+                )
+                (eval3_dir / f"{label}_open_world.json").write_text(
+                    json.dumps(open_world, indent=2),
+                    encoding="utf-8",
+                )
+                (eval3_dir / f"{label}_drift.json").write_text(
+                    json.dumps(drift, indent=2),
+                    encoding="utf-8",
+                )
+
+                best_model, closed_metrics = self._select_best_eval3_model(closed_world)
+                open_metrics = open_world["models"].get(best_model, {})
+                drift_metrics = drift["models"].get(best_model, {})
+
+                success = float(closed_metrics.get("accuracy", float("nan")))
+                auc = float(closed_metrics.get("roc_auc", float("nan")))
+                open_adv = float(open_metrics.get("attacker_advantage", float("nan")))
+                drift_auc = float(drift_metrics.get("roc_auc", float("nan")))
             except Exception:
                 success = float('nan')
                 auc = float('nan')
+                open_adv = float('nan')
+                drift_auc = float('nan')
+                best_model = None
             results[f'success_{label}'] = success
             results[f'auc_{label}'] = auc
+            results[f'open_adv_{label}'] = open_adv
+            results[f'drift_auc_{label}'] = drift_auc
+            results[f'eval3_model_{label}'] = best_model
 
         return results
 
@@ -758,6 +1055,7 @@ class RunEvaluator:
         stability: Dict[str, Any],
         overhead: Dict[str, Any],
         pmfa_stats: Dict[str, Any],
+        attribution_stats: Dict[str, Any],
         trust_gap_series: pd.DataFrame,
         extra_metrics: Mapping[str, Any],
     ) -> Dict[str, Any]:
@@ -791,6 +1089,7 @@ class RunEvaluator:
                 trust_gap_auc = compute_trust_gap_auc(trust_gap_series.to_dict('records'))
 
         metrics = dict(extra_metrics) if extra_metrics else {}
+        framing = self._build_summary_framing(pmfa_stats)
 
         def _metric_float(key: str) -> float:
             value = metrics.get(key)
@@ -837,10 +1136,37 @@ class RunEvaluator:
             'stability_kendall_tau': stability['kendall_tau_mean'],
             'trust_gap_final': trust_gap_final,
             'trust_gap_auc': trust_gap_auc,
-            'pmfa_success_rate_no_ver': pmfa_stats.get('success_no_verification'),
-            'pmfa_success_rate_with_ver': pmfa_stats.get('success_with_verification'),
-            'pmfa_auc_no_ver': pmfa_stats.get('auc_no_verification'),
-            'pmfa_auc_with_ver': pmfa_stats.get('auc_with_verification'),
+            'fibd_mean': attribution_stats.get('fibd_mean'),
+            'split_fail_mean': attribution_stats.get('split_fail_mean'),
+            'coalcorr_mean': attribution_stats.get('coalcorr_mean'),
+            'apmfa_penalty_mean': attribution_stats.get('apmfa_penalty_mean'),
+            'apmfa_penalty_mean_malicious': attribution_stats.get('apmfa_penalty_mean_malicious'),
+            'final_split_fail_penalty_mean': attribution_stats.get('final_split_fail_penalty_mean'),
+            'attribution_signal_count_mean': attribution_stats.get('attribution_signal_count_mean'),
+            'pmfa_success_rate_baseline_no_privacy': pmfa_stats.get('success_baseline_no_privacy'),
+            'pmfa_success_rate_legacy_dmpo': pmfa_stats.get('success_legacy_dmpo'),
+            'pmfa_auc_baseline_no_privacy': pmfa_stats.get('auc_baseline_no_privacy'),
+            'pmfa_auc_legacy_dmpo': pmfa_stats.get('auc_legacy_dmpo'),
+            'pmfa_success_rate_dmpo_x': pmfa_stats.get('success_dmpo_x'),
+            'pmfa_auc_dmpo_x': pmfa_stats.get('auc_dmpo_x'),
+            'pmfa_open_adv_baseline_no_privacy': pmfa_stats.get('open_adv_baseline_no_privacy'),
+            'pmfa_open_adv_legacy_dmpo': pmfa_stats.get('open_adv_legacy_dmpo'),
+            'pmfa_open_adv_dmpo_x': pmfa_stats.get('open_adv_dmpo_x'),
+            'pmfa_drift_auc_baseline_no_privacy': pmfa_stats.get('drift_auc_baseline_no_privacy'),
+            'pmfa_drift_auc_legacy_dmpo': pmfa_stats.get('drift_auc_legacy_dmpo'),
+            'pmfa_drift_auc_dmpo_x': pmfa_stats.get('drift_auc_dmpo_x'),
+            'pmfa_best_model_baseline_no_privacy': pmfa_stats.get('eval3_model_baseline_no_privacy'),
+            'pmfa_best_model_legacy_dmpo': pmfa_stats.get('eval3_model_legacy_dmpo'),
+            'pmfa_best_model_dmpo_x': pmfa_stats.get('eval3_model_dmpo_x'),
+            'pmfa_evidence_scope': framing['pmfa_evidence_scope'],
+            'pmfa_model_family': framing['pmfa_model_family'],
+            'evaluation_scope': framing['evaluation_scope'],
+            'simulator_label': framing['simulator_label'],
+            'trust_attribution_scope': framing['trust_attribution_scope'],
+            'dmpo_x_scope': framing['dmpo_x_scope'],
+            # Legacy aliases kept for compatibility with downstream tooling.
+            'pmfa_success_rate_no_ver': pmfa_stats.get('success_baseline_no_privacy'),
+            'pmfa_success_rate_with_ver': pmfa_stats.get('success_legacy_dmpo'),
             'db_path': str(self.inputs.db_path),
             'fqr': _metric_float('fqr'),
             'fnrq': _metric_float('fnrq'),
@@ -1221,12 +1547,12 @@ class RunEvaluator:
             path = self._save_figure(fig, 'trust_gap.png')
             figures['trust_gap'] = path
 
-        if not math.isnan(pmfa_stats.get('success_no_verification', float('nan'))):
+        if not math.isnan(pmfa_stats.get('success_baseline_no_privacy', float('nan'))):
             fig, ax = plt.subplots(figsize=(5, 4))
-            categories = ['No Verification', 'With Verification']
+            categories = ['Baseline (No Privacy)', 'Legacy DMPO']
             success_rates = [
-                pmfa_stats.get('success_no_verification', np.nan),
-                pmfa_stats.get('success_with_verification', np.nan),
+                pmfa_stats.get('success_baseline_no_privacy', np.nan),
+                pmfa_stats.get('success_legacy_dmpo', np.nan),
             ]
             ax.bar(categories, success_rates, color=['tab:red', 'tab:green'])
             ax.set_ylim(0, 1)

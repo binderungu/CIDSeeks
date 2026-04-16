@@ -31,7 +31,7 @@ try:
     import webview
     PYWEBVIEW_AVAILABLE = True
 except ImportError:
-    webview = None
+    webview = None  # type: ignore[assignment]
 
 HTML_WIDGET_AVAILABLE = "none"
 try:
@@ -57,7 +57,6 @@ def _launch_pywebview_window(path: str) -> None:
     import traceback
     import sys
     
-    gui = "cocoa" if platform.system() == "Darwin" else "auto"
     try:
         webview.create_window(
             "Interactive Network Graph - CIDSeeks",
@@ -69,7 +68,10 @@ def _launch_pywebview_window(path: str) -> None:
             on_top=False,
             minimized=False
         )
-        webview.start(debug=False, gui=gui)
+        if platform.system() == "Darwin":
+            webview.start(debug=False, gui="cocoa")
+        else:
+            webview.start(debug=False)
     except Exception as e:
         print(f"[webview child] failed to open: {e}", file=sys.stderr)
         traceback.print_exc()
@@ -105,10 +107,10 @@ class PyWebViewViewer:
     def __init__(self, parent: ctk.CTkFrame):
         self.parent = parent
         self._container = ctk.CTkFrame(parent, fg_color="transparent")
-        self._webview_window = None
+        self._webview_window: object | None = None
         self._webview_started = False
-        self._current_content = None
-        self._proc = None
+        self._current_content: Optional[str] = None
+        self._proc: Optional[mp.Process] = None
         self.logger = logging.getLogger(f"{__name__}.PyWebViewViewer")
         
         # Create control panel for webview management
@@ -258,7 +260,7 @@ class PyWebViewViewer:
                 if not self._webview_started:
                     self._webview_started = True
                     threading.Thread(
-                        target=lambda: webview.start(debug=False, gui='auto'),
+                        target=lambda: webview.start(debug=False),
                         daemon=True
                     ).start()
 
@@ -496,32 +498,32 @@ def create_viewer(parent: ctk.CTkFrame) -> BaseViewer:
     
     if PYWEBVIEW_AVAILABLE:
         try:
-            viewer = PyWebViewViewer(parent)
+            pywebview_viewer = PyWebViewViewer(parent)
             logger.info("✅ Created PyWebViewViewer (full JavaScript support)")
-            return viewer
+            return pywebview_viewer
         except Exception as e:
             logger.warning(f"PyWebView initialization failed: {e}, falling back...")
     
     if HTML_WIDGET_AVAILABLE == "tkinterweb":
         try:
-            viewer = TkinterWebViewer(parent)
+            tkinterweb_viewer = TkinterWebViewer(parent)
             logger.info("✅ Created TkinterWebViewer (basic HTML, no JavaScript)")
-            return viewer
+            return tkinterweb_viewer
         except Exception as e:
             logger.warning(f"TkinterWeb initialization failed: {e}, falling back...")
     
     if HTML_WIDGET_AVAILABLE == "tkhtmlview":
         try:
-            viewer = TkHtmlViewViewer(parent)
+            tkhtmlview_viewer = TkHtmlViewViewer(parent)
             logger.info("✅ Created TkHtmlViewViewer (basic HTML, no JavaScript)")
-            return viewer
+            return tkhtmlview_viewer
         except Exception as e:
             logger.warning(f"TkHtmlView initialization failed: {e}, falling back...")
     
     # Final fallback
-    viewer = TextViewer(parent)
+    text_viewer = TextViewer(parent)
     logger.info("✅ Created TextViewer (plain text fallback)")
-    return viewer
+    return text_viewer
 
 
 def get_viewer_capabilities() -> dict:

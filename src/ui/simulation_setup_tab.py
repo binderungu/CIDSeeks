@@ -9,7 +9,7 @@ import tkinter.messagebox as messagebox
 from simulation.core.simulation_engine import SimulationEngine
 import tkinter as tk
 from tkinter import ttk
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -661,12 +661,12 @@ class SimulationSetupTab(ctk.CTkFrame):
         
         return int((malicious_nodes / total_nodes) * 100)
         
-    def get_attack_type(self) -> str:
+    def get_attack_type(self) -> Optional[str]:
         """
         Dapatkan tipe serangan yang dipilih user.
         
         Returns:
-            str: Nama tipe serangan yang dipilih, atau None jika tidak ada yang dipilih
+            Optional[str]: Nama tipe serangan yang dipilih, atau None jika tidak ada yang dipilih
         """
         # Dictionary attack types dari checkboxes
         attack_types = {

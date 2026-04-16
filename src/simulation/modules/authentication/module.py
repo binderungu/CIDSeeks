@@ -226,6 +226,9 @@ class AuthenticationModule:
                 return False
 
             target_cert = getattr(target_auth_module, "certificate", None)
+            if not isinstance(target_cert, dict):
+                self._record_auth(target_node, False, "invalid_certificate")
+                return False
             if not self._validate_certificate(target_node, target_cert):
                 self._record_auth(target_node, False, "invalid_certificate")
                 return False
@@ -237,7 +240,7 @@ class AuthenticationModule:
             current_iter = self._current_iteration()
             challenge_nonce = self.rng.randint(10000, 99999)
             challenge = f"auth_challenge|src={self.node.id}|dst={target_node.id}|it={current_iter}|nonce={challenge_nonce}"
-            signature = target_auth_module._sign_message(challenge)
+            signature = str(target_auth_module._sign_message(challenge))
             verified = self._verify_signature(challenge, signature, target_cert)
 
             if verified and self.rng.random() < self.config["verification_false_reject_rate"]:

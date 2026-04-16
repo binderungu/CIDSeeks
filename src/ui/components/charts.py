@@ -128,9 +128,22 @@ def plot_pmfa_success(ax, summary: Dict[str, Any]) -> None:
     ax.clear()
     if not summary:
         ax.text(0.5, 0.5, "No summary available", ha='center', va='center'); return
-    no_ver = summary.get('pmfa_success_rate_no_ver')
-    with_ver = summary.get('pmfa_success_rate_with_ver')
-    if not np.isfinite(no_ver) and not np.isfinite(with_ver):
+    no_ver_raw = summary.get('pmfa_success_rate_baseline_no_privacy', summary.get('pmfa_success_rate_no_ver'))
+    with_ver_raw = summary.get('pmfa_success_rate_legacy_dmpo', summary.get('pmfa_success_rate_with_ver'))
+    dmpo_x_raw = summary.get('pmfa_success_rate_dmpo_x')
+    try:
+        no_ver = float(no_ver_raw) if no_ver_raw is not None else float("nan")
+    except (TypeError, ValueError):
+        no_ver = float("nan")
+    try:
+        with_ver = float(with_ver_raw) if with_ver_raw is not None else float("nan")
+    except (TypeError, ValueError):
+        with_ver = float("nan")
+    try:
+        dmpo_x = float(dmpo_x_raw) if dmpo_x_raw is not None else float("nan")
+    except (TypeError, ValueError):
+        dmpo_x = float("nan")
+    if not np.isfinite(no_ver) and not np.isfinite(with_ver) and not np.isfinite(dmpo_x):
         ax.text(0.5, 0.5, "No PMFA metrics", ha='center', va='center'); return
     labels = []
     values = []
@@ -140,6 +153,9 @@ def plot_pmfa_success(ax, summary: Dict[str, Any]) -> None:
     if np.isfinite(with_ver):
         labels.append('With Verification')
         values.append(with_ver)
-    ax.bar(labels, values, color=['#d62728', '#2ca02c'][:len(labels)])
+    if np.isfinite(dmpo_x):
+        labels.append('DMPO-X')
+        values.append(dmpo_x)
+    ax.bar(labels, values, color=['#d62728', '#2ca02c', '#1f77b4'][:len(labels)])
     ax.set_ylim(0, 1)
-    ax.set_ylabel('Success rate')
+    ax.set_ylabel('Closed-world accuracy')

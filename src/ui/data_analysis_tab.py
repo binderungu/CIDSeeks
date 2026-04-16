@@ -2,7 +2,7 @@ import sqlite3
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -41,7 +41,7 @@ class DataAnalysisTab(ttk.Frame):
         self.refresh_in_progress = False # Flag to prevent overlapping refreshes
 
         # Queue for thread-safe communication
-        self.ui_update_queue = queue.Queue()
+        self.ui_update_queue: queue.Queue[Any] = queue.Queue()
         
         self._init_ui()
         

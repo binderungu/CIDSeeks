@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 import tempfile
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 # Tambahkan src ke path agar bisa import modul simulasi
 current_dir = os.path.dirname(os.path.abspath(__file__))

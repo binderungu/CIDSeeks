@@ -1,49 +1,76 @@
-# CIDSeeks - Collaborative Intrusion Detection System Simulation
+# CIDSeeks - Evaluation-2 SimPy Protocol Simulator
 
-## 🎯 Project Overview
+CIDSeeks di repo ini adalah **canonical Evaluation-2 repository** untuk paper: simulator protokol end-to-end berbasis SimPy yang mengevaluasi kolaborasi IDS dengan **obfuscation + attribution**. Jalur runtime yang dikunci di sini meliputi topologi jaringan, gossip dissemination, trust gating, authentication abstraction, privacy strategy (`dmpo_legacy` / `dmpo_x`), dan 4 insider attacks canonical.
 
-CIDSeeks is a comprehensive simulation platform for a **Collaborative Intrusion Detection System (CIDS)** that implements an innovative **3-level challenge trust model**. This project was developed as part of doctoral research to evaluate the effectiveness of the trust model in detecting various insider attacks (PMFA, Collusion, Sybil, Betrayal) within a collaborative P2P network.
+## Scope Lock
 
-**Applied Standard**: A complete simulation platform for academic research compliant with international publication standards.
+- Klaim empiris repo ini dibatasi pada **PMFA, Collusion, Sybil, Betrayal**.
+- Repo ini diposisikan sebagai **Evaluation-2 protocol simulator** dan generator trace untuk **Eval-3 metadata attacker pipeline** (`results/<suite>/<run_id>/eval3_pmfa/`).
+- Framing sistem yang dipakai sekarang: **DMPO-X menurunkan stream-level distinguishability, trust engine mengubah residual leakage menjadi attribution evidence** (`FIBD`, `SplitFail`, `CoalCorr`, `P_apmfa`).
+- Evaluasi-1 trust-core dan Evaluasi-4 mini-testbed **bukan jalur klaim canonical repo ini**.
 
-### 🔬 Research Objectives:
-- Evaluate the performance of the proposed **3-level challenge trust model**.
-- Analyze resilience against various types of attacks.
-- Provide a reproducible evaluation framework for academic research.
+## Canonical Docs
 
-### 📌 Scope Lock (Evaluation-2)
-- Empirical claims in this repo are restricted to 4 insider attacks: **PMFA, Collusion, Sybil, Betrayal**.
-- Broader attack taxonomy in `references/cids.md` (e.g., newcomer/pollution) is treated as literature context unless a dedicated experiment suite is added.
+Urutan baca utama:
+- [docs/00_INDEX.md](docs/00_INDEX.md)
+- [docs/01_RUNBOOK.md](docs/01_RUNBOOK.md)
+- [docs/02_SYSTEM_SPEC.md](docs/02_SYSTEM_SPEC.md)
+- [docs/03_ATTACK_MODEL.md](docs/03_ATTACK_MODEL.md)
+- [docs/04_EXPERIMENTS.md](docs/04_EXPERIMENTS.md)
 
----
+Docs di atas adalah source of truth. Jika README dan docs bertentangan, ikuti `docs/`.
 
-## ✨ **Key Features**
+## Quick Start
 
-### **🏗️ Core Architecture:**
-- **CIDSeeks Trust Engine**: Hierarchical 3-level challenge calculations
-- **Attack Simulation**: PMFA, Collusion, Sybil, Betrayal attacks
-- **SimPy-based Engine**: Discrete-event simulation framework
+### 1. Setup
 
-### **📊 Evaluation Framework:**
-- **Performance Benchmarking**: Head-to-head method comparison
-- **Academic Analysis Tools**: Statistical significance testing
-- **Comprehensive Metrics**: Detection, convergence, resilience metrics
-- **Visualization Suite**: Interactive network graphs dan performance plots
+```bash
+uv sync
+```
 
-### **🎨 User Interface:**
-- **Modern GUI**: CustomTkinter-based interface
-- **Real-time Monitoring**: Live simulation progress
-- **Interactive Visualization**: Network topology dan trust evolution
-- **Method Configuration**: Easy trust method selection dan parameter tuning
+### 2. Canonical commands
 
-### **🔐 Security & Privacy:**
-- **Authentication Module**: CA-based node authentication
-- **Privacy Protection**: Alarm obfuscation dan variation
-- **Cryptographic Security**: RSA encryption untuk secure communication
+```bash
+# Single-run smoke
+uv run --locked -- python runner.py --config config.yaml
 
----
+# Smoke suite
+uv run --locked -- python simulate.py --suite smoke --config configs/experiments/experiments_smoke.yaml
 
-## 📁 **Project Structure**
+# Targeted DMPO-X smoke
+uv run --locked -- python simulate.py --suite smoke --config configs/experiments/experiments_smoke_dmpox.yaml
+
+# Paper-core CI gate subset
+uv run --locked -- python simulate.py --suite paper_core --config configs/experiments/experiments_paper_core_ci_gate.yaml
+```
+
+Validation helpers:
+
+```bash
+uv run --locked -- python scripts/qa/check_stats_gate.py --path results/smoke/stats_gate.json
+uv run --locked -- python scripts/qa/check_stats_gate.py --path results/paper_core/stats_gate.json
+make publish-freeze-local
+```
+
+### 3. Optional GUI
+
+```bash
+uv run --locked -- python src/main.py
+```
+
+Catatan:
+- GUI memakai runtime canonical yang sama, tetapi repo ini dioptimalkan untuk artifact CLI/reviewer path.
+- Jalur kanonis config suite adalah `configs/experiments/`.
+- Jalur kanonis artifact adalah `results/<suite>/<run_id>/`.
+- Basename config lama masih diterima sementara, tetapi deprecated.
+
+## Public Snapshot Policy
+
+- Snapshot publik dibuat via `make public-snapshot`.
+- Snapshot publik mengecualikan file internal dan jalur non-canonical, termasuk `AGENTS.md`, `docs/06_CODEX_RULES.md`, `docs/07_THREAD_STARTERS.md`, `references/*.md`, serta placeholder `src/eval1_trust_core/*` dan `src/eval4_minitestbed/*`.
+- Untuk freeze final, jalankan `make publish-freeze-local` dulu lalu ekspor snapshot dari commit private yang bersih.
+
+## Project Structure
 
 ```
 CIDSeeks/
@@ -73,51 +100,7 @@ CIDSeeks/
 
 ---
 
-## 🚀 **Quick Start**
-
-### **1. Installation**
-```bash
-uv sync
-```
-
-### **2. Run GUI Application**
-```bash
-uv run --locked -- python src/main.py
-```
-Catatan:
-- GUI aktif (`src/main.py` + `src/ui/`) memakai `simulation.core.simulation_engine` (jalur canonical).
-- UI setup sekarang mengambil baseline slider dari `config.yaml` canonical (dengan fallback default aman).
-- Path lama `simulation.{scenario,simulator,reporting,visualization}` dan seluruh namespace `simulation.legacy` sudah dihapus.
-- `src/simulation/runner.py` sudah dihapus; entry GUI canonical adalah `src/main.py`.
-
-### **3. Run CLI Simulation**
-```bash
-uv run --locked -- python runner.py --config config.yaml
-
-# Quick paper-core subset
-uv run --locked -- python simulate.py --suite paper_core --config configs/experiments/experiments_batch_quick.yaml
-
-# Full paper-core (final numbers)
-uv run --locked -- python simulate.py --suite paper_core --config configs/experiments/experiments.yaml
-```
-
-### **4. Run Evaluation Framework**
-```bash
-# Smoke suite
-uv run --locked -- python simulate.py --suite smoke --config configs/experiments/experiments_smoke.yaml
-
-# Validate suite gate
-uv run --locked -- python scripts/qa/check_stats_gate.py --path results/smoke/stats_gate.json
-```
-
-Catatan:
-- Jalur kanonis hasil eksperimen: `results/`.
-- Jalur kanonis suite config: `configs/experiments/`.
-- Basename lama (mis. `--config experiments_smoke.yaml`) masih didukung sementara, tetapi sudah deprecated dan akan memunculkan warning migrasi.
-- Layout lama `results/default/` dan `runs/` sudah dipensiunkan dari repo.
-- Panduan cepat folder: lihat `results/README.md` dan `scripts/README.md`.
-
-### **5. Packaging Metadata Policy**
+## Packaging Metadata Policy
 - `pyproject.toml` adalah **single source of truth** untuk metadata paket dan dependencies.
 - `uv.lock` adalah artifact reproducibility yang dipakai workflow canonical (`uv sync`, `uv run --locked -- ...`).
 - `setup.py` dipertahankan sebagai shim kompatibilitas tooling lama; jangan menaruh metadata duplikat di file itu.

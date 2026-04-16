@@ -29,7 +29,7 @@ class PMFAMatchCache:
         return self.match_count(alarm_set_id, round_id, window) >= int(min_matches)
 
 
-class BehaviorPolicy:
+class SelectiveInsiderPolicy:
     """Encapsulates attacker behavior for trust-response generation."""
 
     def __init__(
@@ -416,3 +416,7 @@ class BehaviorPolicy:
             })
 
         return flags
+
+
+# Backward-compatible alias
+BehaviorPolicy = SelectiveInsiderPolicy

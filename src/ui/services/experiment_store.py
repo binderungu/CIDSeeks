@@ -252,7 +252,11 @@ class RunArtifacts:
         self.auc_per_round: pd.DataFrame = pd.DataFrame()
         self.metrics_per_round: pd.DataFrame = pd.DataFrame()
         self.trust_gap_per_round: pd.DataFrame = pd.DataFrame()
+        # Compatibility alias used by UI paths expecting legacy naming.
+        self.trust_means: pd.DataFrame = pd.DataFrame()
         self.tti_per_node: pd.DataFrame = pd.DataFrame()
+        # Compatibility alias used by UI paths expecting legacy naming.
+        self.tti: pd.DataFrame = pd.DataFrame()
         self.fp_curve: pd.DataFrame = pd.DataFrame()
         self.overhead: Optional[pd.DataFrame] = None
         self.stability_per_round: pd.DataFrame = pd.DataFrame()

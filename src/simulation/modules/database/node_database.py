@@ -33,6 +33,20 @@ class _QueryResult:
         finally:
             self.close()
 
+    @property
+    def connection(self):
+        """Compatibility shim for callers that still do cursor.connection.close()."""
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._cursor, name)
+
     def close(self) -> None:
         if self._closed:
             return
@@ -41,6 +55,9 @@ class _QueryResult:
         with suppress(Exception):
             self._conn.close()
         self._closed = True
+
+    def __del__(self) -> None:
+        self.close()
 
 class NodeDatabase:
     """Database untuk menyimpan data simulasi CIDS"""
@@ -303,6 +320,38 @@ class NodeDatabase:
     def _connect(self, timeout: float = 30.0):
         self._ensure_db_dir()
         return sqlite3.connect(self.db_path, timeout=timeout)
+
+    @staticmethod
+    def _as_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _as_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _as_optional_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _as_optional_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
         
     def store_node(self, node_id: int, node_type: str, is_malicious: bool):
         """Store data node ke database
@@ -475,10 +524,19 @@ class NodeDatabase:
             self.logger.error(f"Error storing summary: {str(e)}")
             # Jangan raise exception agar simulasi bisa lanjut jika hanya gagal simpan summary
 
-    def store_enhanced_summary(self, metrics: dict, method: str, total_nodes: int = None, 
-                             malicious_nodes: int = None, attack_type: str = None,
-                             total_iterations: int = None, completed_iterations: int = None,
-                             duration: float = None, is_completed: bool = False, error: str = None):
+    def store_enhanced_summary(
+        self,
+        metrics: dict,
+        method: str,
+        total_nodes: Optional[int] = None,
+        malicious_nodes: Optional[int] = None,
+        attack_type: Optional[str] = None,
+        total_iterations: Optional[int] = None,
+        completed_iterations: Optional[int] = None,
+        duration: Optional[float] = None,
+        is_completed: bool = False,
+        error: Optional[str] = None,
+    ):
         """
         Store comprehensive enhanced metrics to experiment_summary table.
         
@@ -563,7 +621,7 @@ class NodeDatabase:
             self.logger.error(f"Error storing enhanced summary: {str(e)}")
             # Don't raise exception so simulation can continue even if storage fails
 
-    def get_node_info(self, node_id: int) -> Dict[str, Any]:
+    def get_node_info(self, node_id: int) -> Optional[Dict[str, Any]]:
         """
         Ambil informasi node
         
@@ -653,7 +711,11 @@ class NodeDatabase:
             self.logger.error(f"Error getting auth results: {str(e)}")
             raise
             
-    def get_metrics(self, method: str = None, metric_name: str = None) -> List[Dict[str, Any]]:
+    def get_metrics(
+        self,
+        method: Optional[str] = None,
+        metric_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Ambil metrik eksperimen
         
@@ -703,7 +765,7 @@ class NodeDatabase:
     store_experiment_summary = store_summary
     store_experiment_metric = store_metric
     
-    def get_summary(self, method: str = None) -> List[Dict[str, Any]]:
+    def get_summary(self, method: Optional[str] = None) -> List[Dict[str, Any]]:
         """Ambil ringkasan eksperimen"""
         try:
             # Increase timeout and enable WAL mode
@@ -909,28 +971,28 @@ class NodeDatabase:
             raise
 
     # --- New helpers for evaluation package ---
-    def store_node_round_rows(self, exp_id: str, round_num: int, rows: list[dict]) -> None:
+    def store_node_round_rows(self, exp_id: str, round_num: int, rows: list[dict[str, Any]]) -> None:
         try:
             with sqlite3.connect(self.db_path, timeout=30.0) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 cursor = conn.cursor()
                 data = [
-                    (
-                        exp_id,
-                        round_num,
-                        int(r.get('node_id')),
-                        int(r.get('label_is_malicious') or 0),
-                        float(r.get('trust') or 0.0),
-                        int(r.get('pred_is_malicious') or 0),
-                        int(r.get('was_quarantined') or 0),
-                        (None if r.get('ttd_round') is None else int(r.get('ttd_round'))),
-                        int(r.get('sent_msgs') or 0),
-                        int(r.get('recv_msgs') or 0),
-                        int(r.get('bytes_sent') or 0),
-                        int(r.get('bytes_recv') or 0),
-                        (None if r.get('cpu_ms') is None else float(r.get('cpu_ms'))),
-                        (None if r.get('mem_bytes') is None else int(r.get('mem_bytes'))),
-                    )
+                        (
+                            exp_id,
+                            round_num,
+                            self._as_int(r.get('node_id')),
+                            self._as_int(r.get('label_is_malicious') or 0),
+                            self._as_float(r.get('trust') or 0.0),
+                            self._as_int(r.get('pred_is_malicious') or 0),
+                            self._as_int(r.get('was_quarantined') or 0),
+                            self._as_optional_int(r.get('ttd_round')),
+                            self._as_int(r.get('sent_msgs') or 0),
+                            self._as_int(r.get('recv_msgs') or 0),
+                            self._as_int(r.get('bytes_sent') or 0),
+                            self._as_int(r.get('bytes_recv') or 0),
+                            self._as_optional_float(r.get('cpu_ms')),
+                            self._as_optional_int(r.get('mem_bytes')),
+                        )
                     for r in rows
                 ]
                 cursor.executemany(
@@ -946,7 +1008,7 @@ class NodeDatabase:
         except sqlite3.Error as e:
             self.logger.error(f"Error storing node_round rows: {e}")
 
-    def store_round_metrics(self, exp_id: str, round_num: int, metrics: dict) -> None:
+    def store_round_metrics(self, exp_id: str, round_num: int, metrics: dict[str, Any]) -> None:
         try:
             with sqlite3.connect(self.db_path, timeout=30.0) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
@@ -962,19 +1024,19 @@ class NodeDatabase:
                     (
                         exp_id,
                         round_num,
-                        float(metrics.get('auc_node') or 0.0),
-                        (None if metrics.get('delta_tau') is None else float(metrics.get('delta_tau'))),
-                        (None if metrics.get('cohens_d') is None else float(metrics.get('cohens_d'))),
-                        (None if metrics.get('tpr_node') is None else float(metrics.get('tpr_node'))),
-                        (None if metrics.get('fpr_honest') is None else float(metrics.get('fpr_honest'))),
-                        (None if metrics.get('avg_cpu_ms_node') is None else float(metrics.get('avg_cpu_ms_node'))),
-                        (None if metrics.get('avg_mem_node') is None else int(metrics.get('avg_mem_node'))),
-                        int(metrics.get('total_msgs') or 0),
-                        int(metrics.get('total_bytes') or 0),
-                        (None if metrics.get('overhead_pct') is None else float(metrics.get('overhead_pct'))),
-                        (None if metrics.get('consensus_p50_ms') is None else float(metrics.get('consensus_p50_ms'))),
-                        (None if metrics.get('consensus_p95_ms') is None else float(metrics.get('consensus_p95_ms'))),
-                        (None if metrics.get('ledger_growth_bytes') is None else int(metrics.get('ledger_growth_bytes'))),
+                        self._as_float(metrics.get('auc_node') or 0.0),
+                        self._as_optional_float(metrics.get('delta_tau')),
+                        self._as_optional_float(metrics.get('cohens_d')),
+                        self._as_optional_float(metrics.get('tpr_node')),
+                        self._as_optional_float(metrics.get('fpr_honest')),
+                        self._as_optional_float(metrics.get('avg_cpu_ms_node')),
+                        self._as_optional_int(metrics.get('avg_mem_node')),
+                        self._as_int(metrics.get('total_msgs') or 0),
+                        self._as_int(metrics.get('total_bytes') or 0),
+                        self._as_optional_float(metrics.get('overhead_pct')),
+                        self._as_optional_float(metrics.get('consensus_p50_ms')),
+                        self._as_optional_float(metrics.get('consensus_p95_ms')),
+                        self._as_optional_int(metrics.get('ledger_growth_bytes')),
                     ),
                 )
                 conn.commit()

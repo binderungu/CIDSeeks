@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import Any, TYPE_CHECKING, Dict, Optional
 from ...utils.perf import metric_logger
 
 if TYPE_CHECKING:
@@ -40,11 +40,19 @@ class ChallengeManager:
                         'iteration': getattr(self.node, 'current_iteration', 0),
                         'message_id': challenge_message_data.get('id'),
                         'alarm_hash': None,
+                        'event_scope': 'internal',
                     })
                 except Exception:
                     self.logger.debug("Challenge privacy logging failed", exc_info=True)
-                self.node.send_message(target_node.id, challenge_message_data) 
-                self.logger.debug(f"Initiated {challenge_level} challenge to Node {target_node.id}")
+                send_message = getattr(self.node, "send_message", None)
+                if callable(send_message):
+                    send_message(target_node.id, challenge_message_data)
+                    self.logger.debug(f"Initiated {challenge_level} challenge to Node {target_node.id}")
+                else:
+                    self.logger.debug(
+                        "Node %s has no send_message API; challenge payload generated but not sent.",
+                        self.node.id,
+                    )
         return None  # Message creation/sending is handled via node.send_message.
 
     def _should_challenge(self, target_node: 'Node') -> bool:
@@ -61,7 +69,7 @@ class ChallengeManager:
             return self.rng.choice(['basic', 'advanced', 'final'])
         return 'basic'
 
-    def _generate_challenge(self, target_node: 'Node', level: str) -> Optional[Dict]:
+    def _generate_challenge(self, target_node: 'Node', level: str) -> Optional[Dict[str, Any]]:
         """Generates the challenge message content (payload dictionary) based on the level."""
         challenge_data = {
             'type': 'challenge',
@@ -84,7 +92,7 @@ class ChallengeManager:
         level = response_data.get('level')
         self.logger.debug(f"Received {level} challenge response from {source_id}: {response_data}")
 
-    def _generate_nonce(self, length=16):
+    def _generate_nonce(self, length: int = 16) -> str:
         """Generates a random nonce."""
         if self.rng:
             return "".join(self.rng.choice("0123456789abcdef") for _ in range(length * 2))

@@ -19,10 +19,11 @@ scenarios:
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
 
   - scenario_id: pmfa_dev
     attack_type: PMFA
-    notes: "Fast dev profile for PMFA verification."
+    notes: "Fast dev profile for PMFA verification with DMPO legacy vs DMPO-X."
     parameters:
       n_nodes: [50, 100]
       iterations: [60, 120]
@@ -32,6 +33,25 @@ scenarios:
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_legacy, dmpo_x]
+      attribution_profile: [full]
+      auth_mode: [required]
+
+  - scenario_id: pmfa_attribution_dev
+    attack_type: PMFA
+    notes: "Fast dev attribution ablation profile on canonical DMPO-X."
+    parameters:
+      n_nodes: [50]
+      iterations: [60]
+      fraction_colluders: [0.2]
+      fraction_sybils: [0.05]
+      challenge_rate: [0.10]
+      forgetting_factor: [0.9]
+      trust_threshold: [0.7]
+      trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
+      attribution_profile: [full, no_fibd, no_split_fail, no_coalcorr]
+      auth_mode: [required]
 
   - scenario_id: sybil_dev
     attack_type: Sybil
@@ -45,6 +65,8 @@ scenarios:
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
 
   - scenario_id: betrayal_dev
     attack_type: Betrayal
@@ -58,3 +80,5 @@ scenarios:
       forgetting_factor: [0.9]
       trust_threshold: [0.7]
       trust_model: [three_level_challenge]
+      privacy_strategy: [dmpo_x]
+      auth_mode: [required]
